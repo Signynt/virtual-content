@@ -52,7 +52,7 @@ export default class DynamicFooterPlugin extends Plugin {
 	}
 	
 	private async injectFooterToPreview(view: MarkdownView) {
-		const container = view.containerEl.querySelector('.markdown-preview-view');
+		const container = view.containerEl.querySelector('.mod-footer');
 		if (!container) return;
 		
 		// Remove existing footer if any
@@ -74,8 +74,6 @@ export default class DynamicFooterPlugin extends Plugin {
 			this
 		);
 		
-		// Get the content container and append the footer at the bottom
-		const content = container.querySelector('.cm-sizer');
 		container.appendChild(footerDiv);
 	}
 	
