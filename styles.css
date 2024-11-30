@@ -1,8 +1,9 @@
-/*
+.markdown-preview-view.is-readable-line-width .markdown-preview-sizer>div, .markdown-source-view.mod-cm6.is-readable-line-width .cm-contentContainer.cm-contentContainer>.cm-content>div, .markdown-source-view.mod-cm6.is-readable-line-width .cm-sizer>.virtual-footer, .markdown-source-view.mod-cm6.is-readable-line-width .cm-sizer>.inline-title, .markdown-source-view.mod-cm6.is-readable-line-width .cm-sizer>.metadata-container {
+    max-width: var(--max-width);
+    width: var(--line-width);
+    margin-inline: var(--content-margin) !important;
+}
 
-This CSS file will be included with your plugin, and
-available in the app when your plugin is enabled.
-
-If your plugin does not need CSS, delete this file.
-
-*/
+.virtual-footer-cm-padding {
+    padding-bottom: var(--p-spacing) !important;
+}

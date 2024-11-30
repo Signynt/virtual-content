@@ -1,53 +1,55 @@
-import { App, Plugin, PluginSettingTab, Setting, MarkdownView, MarkdownRenderer } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, MarkdownView, MarkdownRenderer, MarkdownPreviewView } from 'obsidian';
 
-interface DynamicFooterSettings {
+interface VirtualFooterSettings {
 	rules: { folderPath: string; footerText: string }[];
 }
-const DEFAULT_SETTINGS: DynamicFooterSettings = {
+const DEFAULT_SETTINGS: VirtualFooterSettings = {
 	rules: [{ folderPath: '', footerText: '' }]
 }
 
-export default class DynamicFooterPlugin extends Plugin {
-	settings: DynamicFooterSettings;
+export default class VirtualFooterPlugin extends Plugin {
+	settings: VirtualFooterSettings;
 	
 	async onload() {
 		await this.loadSettings();
-		
-		// Add settings tab
-		this.addSettingTab(new DynamicFooterSettingTab(this.app, this));
-		
-		// Register event to handle file open
-		this.registerEvent(
-			this.app.workspace.on('file-open', async (file) => {
-				if (!file) return;
-				
-				const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (!view) return;
-				
-				// Handle both reading and editing modes
-				if (view.getMode() === 'preview') {
-					this.injectFooterToPreview(view);
-				} else {
-					this.injectFooterToEditor(view);
+		this.addSettingTab(new VirtualFooterSettingTab(this.app, this));
+
+		//Take care of the footer when the view changes
+		const handleView = async (view: MarkdownView | null) => {
+			if (!view?.file) return;
+			const state = view.getState();
+			
+			if (state.mode === 'preview') {
+				await this.injectFooterToPreview(view);
+			} else if (state.mode === 'source' && !state.source) {
+				// Remove the padding from the content area to append the footer
+				const cmContent = view.containerEl.querySelector('.cm-editor .cm-content') as HTMLDivElement;
+				if (cmContent) {
+					cmContent.classList.add('virtual-footer-cm-padding');
 				}
-			})
+				await this.injectFooterToEditor(view);
+			} else {
+				// Remove the custom styling from the content area
+				const cmContent = view.containerEl.querySelector('.cm-editor .cm-content') as HTMLDivElement;
+				if (cmContent) {
+					cmContent.classList.remove('virtual-footer-cm-padding');
+				}
+				await this.removeFooter(view);
+			}
+		};
+
+		// Handle the view when a file is opened
+		this.registerEvent(
+			this.app.workspace.on('file-open', () => 
+				handleView(this.app.workspace.getActiveViewOfType(MarkdownView))
+			)
 		);
-		
-		// Register event for layout change (switching between preview/edit modes)
+
+		// Handle the view when a file layout changes
 		this.registerEvent(
-			this.app.workspace.on('layout-change', () => {
-				const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (!view) return;
-				
-				const file = view.file;
-				if (!file) return;
-				
-				if (view.getMode() === 'preview') {
-					this.injectFooterToPreview(view);
-				} else {
-					this.injectFooterToEditor(view);
-				}
-			})
+			this.app.workspace.on('layout-change', () => 
+				handleView(this.app.workspace.getActiveViewOfType(MarkdownView))
+			)
 		);
 	}
 	
@@ -56,7 +58,7 @@ export default class DynamicFooterPlugin extends Plugin {
 		if (!container) return;
 		
 		// Remove existing footer if any
-		const existingFooter = container.querySelector('.dynamic-footer');
+		const existingFooter = container.querySelector('.virtual-footer');
 		if (existingFooter) existingFooter.remove();
 		
 		// Determine the appropriate footer text based on the file path
@@ -64,7 +66,7 @@ export default class DynamicFooterPlugin extends Plugin {
 		
 		// Create and inject new footer as a widget below the editor
 		const footerDiv = document.createElement('div');
-		footerDiv.className = 'dynamic-footer';
+		footerDiv.className = 'virtual-footer';
 		
 		await MarkdownRenderer.render(
 			this.app,
@@ -78,11 +80,11 @@ export default class DynamicFooterPlugin extends Plugin {
 	}
 	
 	private async injectFooterToEditor(view: MarkdownView) {
-		const cmEditor = view.containerEl.querySelector('.cm-editor');
+		const cmEditor = view.containerEl.querySelector('.cm-sizer');
 		if (!cmEditor) return;
 		
 		// Remove existing footer if any
-		const existingFooter = cmEditor.querySelector('.dynamic-footer');
+		const existingFooter = cmEditor.querySelector('.virtual-footer');
 		if (existingFooter) existingFooter.remove();
 		
 		// Determine the appropriate footer text based on the file path
@@ -90,8 +92,8 @@ export default class DynamicFooterPlugin extends Plugin {
 		
 		// Create and inject new footer as a widget below the editor
 		const footerDiv = document.createElement('div');
-		footerDiv.className = 'dynamic-footer';
-		//footerDiv.style.marginInline = 'var(--content-margin)';
+		footerDiv.className = 'virtual-footer';
+		footerDiv.style.minHeight = '528px';
 		
 		await MarkdownRenderer.render(
 			this.app,
@@ -102,12 +104,39 @@ export default class DynamicFooterPlugin extends Plugin {
 		);
 
 		// Get the content container and append the footer at the bottom
-		const content = cmEditor.querySelector('.cm-sizer');
-		if (content) {
-			content.appendChild(footerDiv);
-		}
+		cmEditor.appendChild(footerDiv);
+
+		// Re-register all internal link click behaviors manually
+		this.attachInternalLinkHandlers(footerDiv, view.file?.path || '');
+	}
+
+	// Manually attach internal link handlers to the footer since they don't work natively, this is a workaround for now
+	private attachInternalLinkHandlers(container: HTMLElement, sourcePath: string) {
+		container.querySelectorAll('a.internal-link').forEach(link => {
+			const handleClick = (event: MouseEvent, forceNewLeaf = false) => {
+				event.preventDefault();
+				const href = link.getAttribute('href');
+				const target = href && this.app.metadataCache.getFirstLinkpathDest(href, sourcePath);
+				if (target) {
+					this.app.workspace.getLeaf(forceNewLeaf || event.ctrlKey || event.metaKey)
+						.openFile(target);
+				}
+			};
+
+			link.addEventListener('click', handleClick);
+			link.addEventListener('auxclick', (e: MouseEvent) => e.button === 1 && handleClick(e, true));
+		});
+	}
+
+	private async removeFooter(view: MarkdownView) {
+		const cmEditor = view.containerEl.querySelector('.cm-sizer');
+		if (!cmEditor) return;
+		
+		const selectors = ['.cm-sizer', '.mod-footer'].map(s => view.containerEl.querySelector(s));
+		selectors.forEach(el => el?.querySelector('.virtual-footer')?.remove());
 	}
 	
+	// Get the footer text for a given file path based on the rules
 	private getFooterTextForFile(filePath: string): string {
 		for (const rule of this.settings.rules) {
 			if (filePath.startsWith(rule.folderPath)) {
@@ -126,10 +155,10 @@ export default class DynamicFooterPlugin extends Plugin {
 	}
 }
 
-class DynamicFooterSettingTab extends PluginSettingTab {
-	plugin: DynamicFooterPlugin;
+class VirtualFooterSettingTab extends PluginSettingTab {
+	plugin: VirtualFooterPlugin;
 	
-	constructor(app: App, plugin: DynamicFooterPlugin) {
+	constructor(app: App, plugin: VirtualFooterPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}
