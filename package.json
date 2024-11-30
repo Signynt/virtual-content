@@ -1,7 +1,7 @@
 {
 	"name": "virtual-footer",
 	"version": "1.0.0",
-	"description": "Display markdown text (including dataview code) to the bottom of all notes in a folder, without modifying the notes.",
+	"description": "Display markdown text (including dataview queries) at the bottom of all notes in a folder, without modifying them.",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
