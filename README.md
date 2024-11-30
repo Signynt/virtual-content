@@ -10,19 +10,24 @@ This prevents unecessary bloat, while also letting you easily change the code fo
 
 I have a folder called "Authors" which contains a note on each author of media I've read/watched. I want to see what media the Author has made when I open the note, so I use the following dataview query to query that info from my media notes:
 
-```md
+``````md
 #### Made
-\`\`\`dataview
+```dataview
 TABLE without ID
 file.link AS "Name"
 FROM "References/Media Thoughts"
 WHERE contains(creator, this.file.link)
 SORT file.link DESC
-\`\`\`
 ```
+``````
 
 Instead of having to add this to each file, I can simply add a rule to the folder "Authors" which contains the above text, and it will be automatically shown in each file.
 I can do this with as many folders as I like.
+
+![image](https://github.com/user-attachments/assets/b8f3cc76-ae57-478f-898b-b54afc63ff07)
+
+![image](https://github.com/user-attachments/assets/1caa8991-eec1-42a2-96da-ad5526acbc36)
+
 
 ## Limitations
 
