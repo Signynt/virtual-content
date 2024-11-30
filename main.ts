@@ -23,17 +23,23 @@ export default class VirtualFooterPlugin extends Plugin {
 				await this.injectFooterToPreview(view);
 			} else if (state.mode === 'source' && !state.source) {
 				// Remove the padding from the content area to append the footer
-				const cmContent = view.containerEl.querySelector('.cm-editor .cm-content') as HTMLDivElement;
-				if (cmContent) {
-					cmContent.classList.add('virtual-footer-cm-padding');
-				}
+				const [content, container] = [
+					view.containerEl.querySelector('.cm-editor .cm-content'),
+					view.containerEl.querySelector('.markdown-source-view.mod-cm6 .cm-contentContainer')
+				] as HTMLDivElement[];
+				content?.classList.add('virtual-footer-cm-padding');
+				container?.classList.add('virtual-footer-remove-flex');
+
 				await this.injectFooterToEditor(view);
 			} else {
 				// Remove the custom styling from the content area
-				const cmContent = view.containerEl.querySelector('.cm-editor .cm-content') as HTMLDivElement;
-				if (cmContent) {
-					cmContent.classList.remove('virtual-footer-cm-padding');
-				}
+				const [content, container] = [
+					view.containerEl.querySelector('.cm-editor .cm-content'),
+					view.containerEl.querySelector('.markdown-source-view.mod-cm6 .cm-contentContainer')
+				] as HTMLDivElement[];
+				content?.classList.remove('virtual-footer-cm-padding');
+				container?.classList.remove('virtual-footer-remove-flex');
+
 				await this.removeFooter(view);
 			}
 		};

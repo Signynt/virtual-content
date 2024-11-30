@@ -7,3 +7,7 @@
 .virtual-footer-cm-padding {
     padding-bottom: var(--p-spacing) !important;
 }
+
+.virtual-footer-remove-flex {
+    flex: 0 1 auto !important;
+}
