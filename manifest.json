@@ -3,7 +3,7 @@
 	"name": "Virtual Footer",
 	"version": "1.0.0",
 	"minAppVersion": "0.15.0",
-	"description": "Display markdown text (including dataview code) to the bottom of all notes in a folder, without modifying the notes.",
+	"description": "Display markdown text (including dataview queries) at the bottom of all notes in a folder, without modifying them.",
 	"author": "Signynt",
 	"authorUrl": "https://github.com/Signynt",
 	"fundingUrl": "",
