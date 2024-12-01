@@ -99,7 +99,6 @@ export default class VirtualFooterPlugin extends Plugin {
 		// Create and inject new footer as a widget below the editor
 		const footerDiv = document.createElement('div');
 		footerDiv.className = 'virtual-footer';
-		footerDiv.style.minHeight = '528px';
 		
 		await MarkdownRenderer.render(
 			this.app,
@@ -206,7 +205,6 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 
 				const deleteButton = document.createElement('button');
 				deleteButton.textContent = 'Delete Rule';
-				deleteButton.style.margin = '1em';
 				deleteButton.addEventListener('click', async () => {
 					this.plugin.settings.rules.splice(index, 1);
 					await this.plugin.saveSettings();
@@ -216,15 +214,13 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 
 				// Add a visual divider
 				const divider = document.createElement('hr');
-				divider.style.margin = '1em 0';
 				ruleDiv.appendChild(divider);
 			});
 		};
 
 		const addButton = document.createElement('button');
+		addButton.classList.add('virtual-footer-add-button');
 		addButton.textContent = 'Add Rule';
-		addButton.style.margin = '1em';
-		addButton.style.float = 'right';
 		addButton.addEventListener('click', async () => {
 			this.plugin.settings.rules.push({ folderPath: '', footerText: '' });
 			await this.plugin.saveSettings();

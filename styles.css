@@ -11,3 +11,12 @@
 .virtual-footer-remove-flex {
     flex: 0 1 auto !important;
 }
+
+.virtual-footer {
+    min-height: 528px;
+}
+
+.virtual-footer-add-button {
+    margin: 1em;
+    float: right;
+}
