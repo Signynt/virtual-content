@@ -1,10 +1,37 @@
-import { App, Plugin, PluginSettingTab, Setting, MarkdownView, MarkdownRenderer, MarkdownPreviewView } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, MarkdownView, MarkdownRenderer, AbstractInputSuggest } from 'obsidian';
 
 interface VirtualFooterSettings {
 	rules: { folderPath: string; footerText: string }[];
 }
 const DEFAULT_SETTINGS: VirtualFooterSettings = {
 	rules: [{ folderPath: '', footerText: '' }]
+}
+
+export class MultiSuggest extends AbstractInputSuggest<string> {
+    content: Set<string>;
+
+    constructor(private inputEl: HTMLInputElement, content: Set<string>, private onSelectCb: (value: string) => void, app: App) {
+        super(app, inputEl);
+        this.content = content;
+    }
+
+    getSuggestions(inputStr: string): string[] {
+        const lowerCaseInputStr = inputStr.toLocaleLowerCase();
+        return [...this.content].filter((content) =>
+            content.toLocaleLowerCase().contains(lowerCaseInputStr)
+        );
+    }
+
+    renderSuggestion(content: string, el: HTMLElement): void {
+        el.setText(content);
+    }
+
+	selectSuggestion(content: string, evt: MouseEvent | KeyboardEvent): void {
+		this.onSelectCb(content);
+		this.inputEl.value = content;
+		this.inputEl.blur()
+		this.close();
+}
 }
 
 export default class VirtualFooterPlugin extends Plugin {
@@ -128,8 +155,8 @@ export default class VirtualFooterPlugin extends Plugin {
 				}
 			};
 
-			link.addEventListener('click', handleClick);
-			link.addEventListener('auxclick', (e: MouseEvent) => e.button === 1 && handleClick(e, true));
+			this.registerDomEvent(link as HTMLElement, 'click', handleClick);
+			this.registerDomEvent(link as HTMLElement, 'auxclick', (e: MouseEvent) => e.button === 1 && handleClick(e, true));
 		});
 	}
 
@@ -157,6 +184,11 @@ export default class VirtualFooterPlugin extends Plugin {
 	
 	async saveSettings() {
 		await this.saveData(this.settings);
+	}
+
+	async onunload() {
+		// Remove all footers from the document
+		document.querySelectorAll('.virtual-footer').forEach(footer => footer.remove());
 	}
 }
 
@@ -188,6 +220,10 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 						.setPlaceholder('')
 						.setValue(rule.folderPath)
 						.onChange(async (value) => {
+							new MultiSuggest(text.inputEl, new Set(this.plugin.app.vault.getAllLoadedFiles().map(file => file.path)), async (value) => {
+								this.plugin.settings.rules[index].folderPath = value;
+								await this.plugin.saveSettings();
+							}, this.plugin.app);
 							this.plugin.settings.rules[index].folderPath = value;
 							await this.plugin.saveSettings();
 						}));
@@ -203,14 +239,15 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 							await this.plugin.saveSettings();
 						}));
 
-				const deleteButton = document.createElement('button');
-				deleteButton.textContent = 'Delete Rule';
-				deleteButton.addEventListener('click', async () => {
-					this.plugin.settings.rules.splice(index, 1);
-					await this.plugin.saveSettings();
-					renderRules();
-				});
-				ruleDiv.appendChild(deleteButton);
+				new Setting(ruleDiv)
+					.addButton(button => button
+						.setButtonText('Delete Rule')
+						.setClass('virtual-footer-delete-button')
+						.onClick(async () => {
+							this.plugin.settings.rules.splice(index, 1);
+							await this.plugin.saveSettings();
+							renderRules();
+						}));
 
 				// Add a visual divider
 				const divider = document.createElement('hr');
@@ -218,15 +255,15 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 			});
 		};
 
-		const addButton = document.createElement('button');
-		addButton.classList.add('virtual-footer-add-button');
-		addButton.textContent = 'Add Rule';
-		addButton.addEventListener('click', async () => {
-			this.plugin.settings.rules.push({ folderPath: '', footerText: '' });
-			await this.plugin.saveSettings();
-			renderRules();
-		});
-		containerEl.appendChild(addButton);
+		new Setting(containerEl)
+			.addButton(button => button
+				.setButtonText('Add Rule')
+				.setClass('virtual-footer-add-button')
+				.onClick(async () => {
+					this.plugin.settings.rules.push({ folderPath: '', footerText: '' });
+					await this.plugin.saveSettings();
+					renderRules();
+				}));
 
 		renderRules();
 	}
