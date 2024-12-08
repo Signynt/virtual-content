@@ -16,7 +16,10 @@
     min-height: 528px;
 }
 
+.virtual-footer-delete-button {
+    margin: 1em;
+}
+
 .virtual-footer-add-button {
     margin: 1em;
-    float: right;
 }
