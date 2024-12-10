@@ -1,4 +1,4 @@
-import { App, Plugin, PluginSettingTab, Setting, MarkdownView, MarkdownRenderer, AbstractInputSuggest } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, MarkdownView, MarkdownRenderer, AbstractInputSuggest, Component } from 'obsidian';
 
 interface VirtualFooterSettings {
 	rules: { folderPath: string; footerText: string }[];
@@ -101,13 +101,18 @@ export default class VirtualFooterPlugin extends Plugin {
 		const footerDiv = document.createElement('div');
 		footerDiv.className = 'virtual-footer';
 		
+		const footerComponent = new class extends Component {}();
+		footerComponent.load();
+
 		await MarkdownRenderer.render(
 			this.app,
 			footerText,
 			footerDiv,
 			view.file?.path || '',
-			this
+			footerComponent
 		);
+
+		(footerDiv as any).footerComponent = footerComponent;
 		
 		container.appendChild(footerDiv);
 	}
@@ -127,13 +132,18 @@ export default class VirtualFooterPlugin extends Plugin {
 		const footerDiv = document.createElement('div');
 		footerDiv.className = 'virtual-footer';
 		
+		const footerComponent = new class extends Component {}();
+		footerComponent.load();
+
 		await MarkdownRenderer.render(
 			this.app,
 			footerText,
 			footerDiv,
 			view.file?.path || '',
-			this
+			footerComponent
 		);
+
+		(footerDiv as any).footerComponent = footerComponent;
 
 		// Get the content container and append the footer at the bottom
 		cmEditor.appendChild(footerDiv);
