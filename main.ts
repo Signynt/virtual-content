@@ -214,7 +214,7 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 				ruleDiv.addClass('rule');
 
 				new Setting(ruleDiv)
-					.setName(`Folder Path ${index + 1}`)
+					.setName(`Folder path ${index + 1}`)
 					.setDesc('Path in the vault where footer should be displayed')
 					.addText(text => text
 						.setPlaceholder('')
@@ -229,7 +229,7 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 						}));
 
 				new Setting(ruleDiv)
-					.setName(`Footer Text ${index + 1}`)
+					.setName(`Footer text ${index + 1}`)
 					.setDesc('Markdown text to display in the footer')
 					.addTextArea(text => text
 						.setPlaceholder('Enter your footer text here...')
@@ -241,7 +241,7 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 
 				new Setting(ruleDiv)
 					.addButton(button => button
-						.setButtonText('Delete Rule')
+						.setButtonText('Delete rule')
 						.setClass('virtual-footer-delete-button')
 						.onClick(async () => {
 							this.plugin.settings.rules.splice(index, 1);
@@ -257,7 +257,7 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.addButton(button => button
-				.setButtonText('Add Rule')
+				.setButtonText('Add rule')
 				.setClass('virtual-footer-add-button')
 				.onClick(async () => {
 					this.plugin.settings.rules.push({ folderPath: '', footerText: '' });
