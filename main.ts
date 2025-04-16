@@ -197,8 +197,13 @@ export default class VirtualFooterPlugin extends Plugin {
 	}
 
 	async onunload() {
-		// Remove all footers from the document
-		document.querySelectorAll('.virtual-footer').forEach(footer => footer.remove());
+		const component = document.querySelector('.virtual-footer') as any;
+		if (component && component.footerComponent) {
+			// Unload the component
+			component.footerComponent.unload();
+			// Remove all footers from the document
+			document.querySelectorAll('.virtual-footer').forEach(footer => footer.remove());
+		}
 	}
 }
 
