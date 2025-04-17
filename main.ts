@@ -112,7 +112,7 @@ export default class VirtualFooterPlugin extends Plugin {
 			footerComponent
 		);
 
-		(footerDiv as any).footerComponent = footerComponent;
+        (footerDiv as HTMLElement & { footerComponent?: Component }).footerComponent = footerComponent;
 		
 		container.appendChild(footerDiv);
 	}
@@ -143,7 +143,7 @@ export default class VirtualFooterPlugin extends Plugin {
 			footerComponent
 		);
 
-		(footerDiv as any).footerComponent = footerComponent;
+        (footerDiv as HTMLElement & { footerComponent?: Component }).footerComponent = footerComponent;
 
 		// Get the content container and append the footer at the bottom
 		cmEditor.appendChild(footerDiv);
@@ -196,15 +196,21 @@ export default class VirtualFooterPlugin extends Plugin {
 		await this.saveData(this.settings);
 	}
 
-	async onunload() {
-		const component = document.querySelector('.virtual-footer') as any;
-		if (component && component.footerComponent) {
-			// Unload the component
-			component.footerComponent.unload();
-			// Remove all footers from the document
-			document.querySelectorAll('.virtual-footer').forEach(footer => footer.remove());
-		}
-	}
+    async onunload() {
+        // Remove all footers from the document
+        document.querySelectorAll('.virtual-footer').forEach(footer => {
+            const component = footer as HTMLElement & { footerComponent?: Component };
+            if (component.footerComponent) {
+                // Unload the component associated with this footer
+                component.footerComponent.unload();
+            }
+            footer.remove();
+        });
+
+        // Remove custom styling applied to editor elements
+        document.querySelectorAll('.virtual-footer-cm-padding').forEach(el => el.classList.remove('virtual-footer-cm-padding'));
+        document.querySelectorAll('.virtual-footer-remove-flex').forEach(el => el.classList.remove('virtual-footer-remove-flex'));
+    }
 }
 
 class VirtualFooterSettingTab extends PluginSettingTab {
