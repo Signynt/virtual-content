@@ -143,30 +143,30 @@ export default class VirtualFooterPlugin extends Plugin {
 			footerComponent
 		);
 
-        (footerDiv as HTMLElement & { footerComponent?: Component }).footerComponent = footerComponent;
+		(footerDiv as HTMLElement & { footerComponent?: Component }).footerComponent = footerComponent;
 
 		// Get the content container and append the footer at the bottom
 		cmEditor.appendChild(footerDiv);
 
 		// Re-register all internal link click behaviors manually
-		this.attachInternalLinkHandlers(footerDiv, view.file?.path || '');
+		this.attachInternalLinkHandlers(footerDiv, view.file?.path || '', footerComponent, view);
 	}
 
 	// Manually attach internal link handlers to the footer since they don't work natively, this is a workaround for now
-	private attachInternalLinkHandlers(container: HTMLElement, sourcePath: string) {
-		container.querySelectorAll('a.internal-link').forEach(link => {
-			const handleClick = (event: MouseEvent, forceNewLeaf = false) => {
-				event.preventDefault();
-				const href = link.getAttribute('href');
-				const target = href && this.app.metadataCache.getFirstLinkpathDest(href, sourcePath);
-				if (target) {
-					this.app.workspace.getLeaf(forceNewLeaf || event.ctrlKey || event.metaKey)
-						.openFile(target);
-				}
-			};
+	private attachInternalLinkHandlers(container: HTMLElement, sourcePath: string, footerComponent: Component, view: MarkdownView) {
+		// Register click handler for internal links using the component
+		footerComponent.registerDomEvent(container, 'click', (event: MouseEvent) => {
+			const target = event.target as HTMLElement;
+			const link = target.closest('a.internal-link') as HTMLAnchorElement;
 
-			this.registerDomEvent(link as HTMLElement, 'click', handleClick);
-			this.registerDomEvent(link as HTMLElement, 'auxclick', (e: MouseEvent) => e.button === 1 && handleClick(e, true));
+			if (link) {
+				event.preventDefault(); 
+				const href = link.dataset.href;
+				if (href) {
+					const newPane = event.ctrlKey || event.metaKey;
+					this.app.workspace.openLinkText(href, sourcePath, newPane);
+				}
+			}
 		});
 	}
 
