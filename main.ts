@@ -95,37 +95,24 @@ export default class VirtualFooterPlugin extends Plugin {
 	private async injectContent(view: MarkdownView) {
 		const contentText = this.getFooterTextForFile(view.file?.path || '');
 		if (!contentText) {
-			await this.removeInjectedContentDOM(view);
+			await this.removeInjectedContentDOM(view); // Ensure any existing content is removed
 			return;
 		}
 
 		const isRenderInHeader = this.settings.renderLocation === 'header';
 		const state = view.getState();
-		let targetParent: Element | null = null;
-
-		if (state.mode === 'preview') {
-			targetParent = isRenderInHeader
-				? view.containerEl.querySelector('.mod-header.mod-ui') // Updated for preview header
-				: view.containerEl.querySelector('.mod-footer');
-		} else if (state.mode === 'source' && !state.source) { // Live Preview editor
-			targetParent = isRenderInHeader
-				? view.containerEl.querySelector('.metadata-container .metadata-content') // Updated for editor header
-				: view.containerEl.querySelector('.cm-sizer');
-		}
-
-		if (!targetParent) {
-			// console.warn('VirtualFooterPlugin: Target parent for injection not found for current mode/setting.');
-			return;
-		}
 		
+		// Create and prepare the content element first
 		const contentDiv = document.createElement('div');
 		contentDiv.className = 'dynamic-content-element';
 		contentDiv.classList.add(isRenderInHeader ? 'header-rendered-content' : 'footer-rendered-content');
 
 		const contentComponent = new class extends Component {}();
-		contentComponent.load();
+		contentComponent.load(); 
+		// Store component on the element for later cleanup
 		(contentDiv as HTMLElement & { contentComponent?: Component }).contentComponent = contentComponent;
 
+		// Render markdown into the div
 		await MarkdownRenderer.render(
 			this.app,
 			contentText,
@@ -134,8 +121,42 @@ export default class VirtualFooterPlugin extends Plugin {
 			contentComponent
 		);
 		
-		targetParent.appendChild(contentDiv);
-		this.attachInternalLinkHandlers(contentDiv, view.file?.path || '', contentComponent, view);
+		let injectionSuccessful = false;
+
+		if (state.mode === 'preview') {
+			const targetParent = isRenderInHeader
+				? view.containerEl.querySelector('.mod-header.mod-ui')
+				: view.containerEl.querySelector('.mod-footer');
+			if (targetParent) {
+				targetParent.appendChild(contentDiv);
+				injectionSuccessful = true;
+			}
+		} else if (state.mode === 'source' && !state.source) { // Live Preview editor
+			if (isRenderInHeader) {
+				const cmContentContainer = view.containerEl.querySelector('.cm-contentContainer');
+				if (cmContentContainer && cmContentContainer.parentElement) {
+					cmContentContainer.parentElement.insertBefore(contentDiv, cmContentContainer);
+					injectionSuccessful = true;
+				} else {
+					// console.warn('VirtualFooterPlugin: .cm-contentContainer or its parent not found for editor header injection.');
+				}
+			} else { // Footer in Live Preview editor
+				const targetParent = view.containerEl.querySelector('.cm-sizer');
+				if (targetParent) {
+					targetParent.appendChild(contentDiv);
+					injectionSuccessful = true;
+				}
+			}
+		}
+
+		if (injectionSuccessful) {
+			this.attachInternalLinkHandlers(contentDiv, view.file?.path || '', contentComponent, view);
+		} else {
+			// console.warn('VirtualFooterPlugin: Target for injection not found. Content not rendered.');
+			// If injection failed, unload the component to free resources.
+			contentComponent.unload(); 
+			// contentDiv was not added to the DOM, so no need to remove it from DOM.
+		}
 	}
 
 	private attachInternalLinkHandlers(container: HTMLElement, sourcePath: string, contentComponent: Component, view: MarkdownView) {
@@ -167,10 +188,10 @@ export default class VirtualFooterPlugin extends Plugin {
 
 	private async removeInjectedContentDOM(view: MarkdownView) {
 		const potentialParentsSelectors = [
-			'.cm-sizer',                                // Editor footer
+			'.cm-sizer',                                // Editor footer & new editor header parent
 			'.mod-footer',                              // Preview footer
-			'.mod-header.mod-ui',                       // New: Preview header
-			'.metadata-container .metadata-content',    // New: Editor header (beneath metadata)
+			'.mod-header.mod-ui',                       // Preview header
+			'.metadata-container .metadata-content',    // Old editor header location (beneath metadata)
 			'.view-header'                              // Old header location (kept for broader cleanup)
 		];
 
@@ -213,6 +234,7 @@ export default class VirtualFooterPlugin extends Plugin {
 			}
 		});
 
+		// General cleanup for any elements that might have been missed by view-specific cleanup
 		document.querySelectorAll('.dynamic-content-element').forEach(el => {
 			const component = el as HTMLElement & { contentComponent?: Component };
 			if (component.contentComponent) {
@@ -333,3 +355,4 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 		renderRules();
 	}
 }
+
