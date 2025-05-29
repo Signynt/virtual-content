@@ -54,7 +54,6 @@ interface Rule {
  */
 interface VirtualFooterSettings {
 	rules: Rule[];
-	// renderLocation: RenderLocation; // Removed global renderLocation
 }
 
 /**
@@ -69,7 +68,6 @@ interface HTMLElementWithComponent extends HTMLElement {
 
 const DEFAULT_SETTINGS: VirtualFooterSettings = {
 	rules: [{ type: RuleType.Folder, path: '', contentSource: ContentSource.Text, footerText: '', renderLocation: RenderLocation.Footer }],
-	// renderLocation: RenderLocation.Footer, // Removed global renderLocation
 };
 
 // CSS Classes
@@ -191,29 +189,32 @@ export default class VirtualFooterPlugin extends Plugin {
 			return;
 		}
 
-		await this.removeDynamicContentFromView(view);
+		await this.removeDynamicContentFromView(view); // Clear existing content first
 
-		const { rule: applicableRule, contentText } = await this._getApplicableRuleAndContent(view.file.path);
+		const applicableRulesWithContent = await this._getApplicableRulesAndContent(view.file.path);
 
-		if (!applicableRule) {
-			// No rule applies. removeDynamicContentFromView handled cleanup.
-			// renderAndInjectContent will not be called if contentText is empty (which it will be).
-			return;
+		if (applicableRulesWithContent.length === 0) {
+			return; // No rules apply, cleanup already done.
 		}
 
-		// A rule (applicableRule) applies.
-		const isRenderInHeader = applicableRule.renderLocation === RenderLocation.Header;
 		const state = view.getState();
+		let livePreviewFooterStylesApplied = false;
 
-		// Apply specific styles ONLY IF this rule will render in the footer in Live Preview.
-		if (state.mode === 'source' && !state.source && !isRenderInHeader) { // Live Preview mode, footer rendering
-			this.applyLivePreviewFooterStyles(view);
-		}
+		for (const { rule, contentText } of applicableRulesWithContent) {
+			// renderAndInjectContent will bail if contentText is empty.
+			const isRenderInHeader = rule.renderLocation === RenderLocation.Header;
 
-		// Render and inject content if in Preview mode or Live Preview mode.
-		// renderAndInjectContent will bail if contentText is empty.
-		if (state.mode === 'preview' || (state.mode === 'source' && !state.source)) {
-			await this.renderAndInjectContent(view, contentText, applicableRule.renderLocation);
+			// Apply specific styles ONLY IF this rule will render in the footer in Live Preview.
+			// Apply only once per view processing pass.
+			if (state.mode === 'source' && !state.source && !isRenderInHeader && !livePreviewFooterStylesApplied) { // Live Preview mode, footer rendering
+				this.applyLivePreviewFooterStyles(view);
+				livePreviewFooterStylesApplied = true;
+			}
+
+			// Render and inject content if in Preview mode or Live Preview mode.
+			if (state.mode === 'preview' || (state.mode === 'source' && !state.source)) {
+				await this.renderAndInjectContent(view, contentText, rule.renderLocation);
+			}
 		}
 	}
 
@@ -225,7 +226,9 @@ export default class VirtualFooterPlugin extends Plugin {
 	 */
 	private async renderAndInjectContent(view: MarkdownView, contentText: string, renderLocation: RenderLocation): Promise<void> {
 		if (!contentText) {
-			await this.removeInjectedContentDOM(view.containerEl); // Safeguard
+			// Do not remove all injected content here, as this function is now called per rule.
+			// If a specific rule has no content, it simply won't inject anything.
+			// Global cleanup is handled by removeDynamicContentFromView before processing rules.
 			return;
 		}
 
@@ -264,7 +267,7 @@ export default class VirtualFooterPlugin extends Plugin {
 			this.attachInternalLinkHandlers(contentDiv, sourcePath, component);
 		} else {
 			component.unload();
-			console.warn("VirtualFooter: Failed to find injection point for dynamic content.");
+			console.warn("VirtualFooter: Failed to find injection point for dynamic content for a rule.");
 		}
 	}
 
@@ -349,96 +352,53 @@ export default class VirtualFooterPlugin extends Plugin {
 	}
 
 	/**
-	 * Determines the applicable rule and its content for a given file path.
-	 * Priority:
-	 * 1. Most specific folder rule with non-empty content.
-	 * 2. If no folder rule applies or its content is empty, the first matching tag rule (content can be empty).
+	 * Determines all applicable rules and their content for a given file path.
+	 * Rules are processed in the order they are defined in settings.
 	 * @param filePath The path of the file to get content for.
-	 * @returns A promise that resolves to an object containing the matched Rule and its content string.
-	 *          Returns { rule: null, contentText: "" } if no rule matches or applicable rule has no content.
+	 * @returns A promise that resolves to an array of objects, each containing a matched Rule and its content string.
 	 */
-	private async _getApplicableRuleAndContent(filePath: string): Promise<{ rule: Rule | null; contentText: string }> {
-		// 1. Find best folder rule and its content
-		const bestFolderRule = this._findBestMatchingFolderRule(filePath);
-		let folderRuleContent = "";
-		if (bestFolderRule) {
-			folderRuleContent = await this._fetchContentForRule(bestFolderRule);
-			if (folderRuleContent) {
-				// Folder rule has content, this is the one.
-				return { rule: bestFolderRule, contentText: folderRuleContent };
-			}
-		}
-
-		// 2. If folder rule didn't apply, or its content was empty, check tags.
+	private async _getApplicableRulesAndContent(filePath: string): Promise<Array<{ rule: Rule; contentText: string }>> {
+		const allApplicable: Array<{ rule: Rule; contentText: string }> = [];
 		const file = this.app.vault.getAbstractFileByPath(filePath);
+		let fileTags: string[] | null = null;
+
 		if (file instanceof TFile) {
 			const fileCache = this.app.metadataCache.getFileCache(file);
 			if (fileCache) {
 				const allTagsInFileWithHash = getAllTags(fileCache);
-				const fileTags = allTagsInFileWithHash ? allTagsInFileWithHash.map(tag => tag.substring(1)) : [];
-
-				for (const currentRule of this.settings.rules) {
-					if (currentRule.type === RuleType.Tag && currentRule.tag && fileTags.includes(currentRule.tag)) {
-						// First matching tag rule.
-						const tagRuleContent = await this._fetchContentForRule(currentRule);
-						return { rule: currentRule, contentText: tagRuleContent };
-					}
-				}
+				fileTags = allTagsInFileWithHash ? allTagsInFileWithHash.map(tag => tag.substring(1)) : [];
 			}
 		}
 
-		// 3. If we reach here:
-		//    - No folder rule with content was found.
-		//    - No tag rule was found.
-		//    - However, a folder rule *might* have matched but had empty content.
-		//      In this case, that folder rule (and its empty content) should be returned.
-		if (bestFolderRule) { // This implies folderRuleContent was ""
-			return { rule: bestFolderRule, contentText: folderRuleContent }; // folderRuleContent is ""
-		}
+		for (const currentRule of this.settings.rules) {
+			let isMatch = false;
 
-		// No rule matched at all.
-		return { rule: null, contentText: "" };
-	}
-
-
-	/**
-	 * Finds the most specific folder rule that applies to the given file path.
-	 * @param filePath The path of the file.
-	 * @returns The best matching Rule object, or null if no folder rule applies.
-	 */
-	private _findBestMatchingFolderRule(filePath: string): Rule | null {
-		let bestMatchRule: Rule | null = null;
-		let bestMatchSpecificity = -1;
-
-		for (const rule of this.settings.rules) {
-			if (rule.type === RuleType.Folder && rule.path !== undefined) {
-				let isMatch = false;
-				let currentRuleSpecificity = -1;
-
-				if (rule.path === "") { // Empty string path rule applies to all files
+			if (currentRule.type === RuleType.Folder && currentRule.path !== undefined) {
+				if (currentRule.path === "") { // Empty string path rule applies to all files
 					isMatch = true;
-					currentRuleSpecificity = 0; // Least specific
-				} else if (rule.path === "/") { // Root folder path rule
-					const fileForPath = this.app.vault.getAbstractFileByPath(filePath);
-					if (fileForPath instanceof TFile && fileForPath.parent?.isRoot()) {
+				} else if (currentRule.path === "/") { // Root folder path rule
+					if (file instanceof TFile && file.parent?.isRoot()) {
 						isMatch = true;
-						currentRuleSpecificity = 1; // More specific than ""
 					}
-				} else { // Regular folder path (e.g., "Meetings/")
-					const normalizedRulePath = rule.path.endsWith('/') ? rule.path : rule.path + '/';
-					if (filePath.startsWith(normalizedRulePath) || filePath.startsWith(rule.path + '/')) {
+				} else { // Regular folder path
+					const normalizedRulePath = currentRule.path.endsWith('/') ? currentRule.path : currentRule.path + '/';
+					if (filePath.startsWith(normalizedRulePath)) {
 						isMatch = true;
-						currentRuleSpecificity = rule.path.length;
 					}
 				}
-
-				if (isMatch && currentRuleSpecificity > bestMatchSpecificity) {
-					bestMatchSpecificity = currentRuleSpecificity;
-					bestMatchRule = rule;
+			} else if (currentRule.type === RuleType.Tag && currentRule.tag && fileTags) {
+				if (fileTags.includes(currentRule.tag)) {
+					isMatch = true;
 				}
 			}
+
+			if (isMatch) {
+				const contentText = await this._fetchContentForRule(currentRule);
+				// Add the rule and its content. renderAndInjectContent will handle empty contentText by not rendering.
+				allApplicable.push({ rule: currentRule, contentText });
+			}
 		}
-		return bestMatchRule;
+		return allApplicable;
 	}
 
 	/**
@@ -619,12 +579,12 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 	private getAvailableFolderPaths(): Set<string> {
 		if (this.allFolderPathsCache) return this.allFolderPathsCache;
 
-		const paths = new Set<string>(['/']);
+		const paths = new Set<string>(['/']); // Add root by default
 		this.app.vault.getAllLoadedFiles().forEach(file => {
 			if (file instanceof TFile && file.parent) {
 				const parentPath = file.parent.isRoot() ? '/' : (file.parent.path.endsWith('/') ? file.parent.path : file.parent.path + '/');
-				if (parentPath !== '/') paths.add(parentPath);
-			} else if ('children' in file && file.path !== '/') {
+				if (parentPath !== '/') paths.add(parentPath); // Avoid adding root again if files are in root
+			} else if ('children' in file && file.path !== '/') { // It's a folder
 				const folderPath = file.path.endsWith('/') ? file.path : file.path + '/';
 				paths.add(folderPath);
 			}
@@ -673,8 +633,6 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 
 		containerEl.createEl('h2', { text: 'Virtual Content Settings' });
 
-		// Removed global render location setting
-
 		containerEl.createEl('h3', { text: 'Rules' });
 		const rulesContainer = containerEl.createDiv('rules-container');
 
@@ -682,7 +640,6 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 			this.plugin.settings.rules = [];
 		}
 		if (this.plugin.settings.rules.length === 0) {
-			// DEFAULT_SETTINGS.rules[0] now includes renderLocation
 			this.plugin.settings.rules.push(JSON.parse(JSON.stringify(DEFAULT_SETTINGS.rules[0])));
 		}
 
@@ -696,7 +653,6 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 				.setCta()
 				.setClass('virtual-footer-add-button')
 				.onClick(async () => {
-					// Add a new rule with default renderLocation from DEFAULT_SETTINGS
 					this.plugin.settings.rules.push(JSON.parse(JSON.stringify(DEFAULT_SETTINGS.rules[0])));
 					await this.plugin.saveSettings();
 					this.display();
@@ -830,8 +786,6 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 				.onChange(async (value: string) => {
 					rule.renderLocation = value as RenderLocation;
 					await this.plugin.saveSettings();
-					// No need to call this.display() as only this rule's state changes,
-					// and saveSettings() will trigger handleActiveViewChange for visual update.
 				}));
 
 
@@ -850,4 +804,3 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 		ruleDiv.createEl('hr', { cls: 'virtual-footer-rule-divider' });
 	}
 }
-
