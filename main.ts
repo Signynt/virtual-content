@@ -71,9 +71,9 @@ const DEFAULT_SETTINGS: VirtualFooterSettings = {
 };
 
 // CSS Classes
-const CSS_DYNAMIC_CONTENT_ELEMENT = 'dynamic-content-element';
-const CSS_HEADER_RENDERED_CONTENT = 'header-rendered-content';
-const CSS_FOOTER_RENDERED_CONTENT = 'footer-rendered-content';
+const CSS_DYNAMIC_CONTENT_ELEMENT = 'virtual-footer-dynamic-content-element';
+const CSS_HEADER_RENDERED_CONTENT = 'virtual-footer-header-rendered-content';
+const CSS_FOOTER_RENDERED_CONTENT = 'virtual-footer-footer-rendered-content';
 const CSS_VIRTUAL_FOOTER_CM_PADDING = 'virtual-footer-cm-padding'; // For Live Preview footer spacing
 const CSS_VIRTUAL_FOOTER_REMOVE_FLEX = 'virtual-footer-remove-flex'; // For Live Preview footer styling
 

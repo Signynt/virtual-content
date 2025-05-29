@@ -1,4 +1,4 @@
-.markdown-source-view.mod-cm6.is-readable-line-width .cm-sizer>.virtual-footer {
+.markdown-source-view.mod-cm6.is-readable-line-width .cm-sizer>.virtual-footer-dynamic-content-element {
     max-width: var(--max-width);
     width: var(--line-width);
     margin-inline: var(--content-margin);
