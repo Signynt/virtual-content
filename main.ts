@@ -46,6 +46,8 @@ interface Rule {
 	tag?: string;
 	/** For 'folder' type: whether to match subfolders. Defaults to true. Ignored if path is "". */
 	recursive?: boolean;
+	/** For 'tag' type: whether to match subtags (e.g., 'tag' matches 'tag/subtag'). Defaults to false. */
+	includeSubtags?: boolean;
 	/** The source from which to get the content (direct text or a file). */
 	contentSource: ContentSource;
 	/** Direct text content if contentSource is 'text'. */
@@ -85,6 +87,7 @@ const DEFAULT_SETTINGS: VirtualFooterSettings = {
 		contentSource: ContentSource.Text,
 		footerText: '', // Empty content by default
 		renderLocation: RenderLocation.Footer, // Default to footer
+		// includeSubtags is not applicable for Folder type, normalizeRule will handle it.
 	}],
 };
 
@@ -426,10 +429,9 @@ export default class VirtualFooterPlugin extends Plugin {
 		const abstractFile = this.app.vault.getAbstractFileByPath(filePath);
 		
 		if (!(abstractFile instanceof TFile)) {
-			// Not a TFile, so no rules should apply.
 			return [];
 		}
-		const file: TFile = abstractFile; // Now we know it's a TFile
+		const file: TFile = abstractFile;
 
 		let fileTags: string[] | null = null;
 		const fileCache = this.app.metadataCache.getFileCache(file);
@@ -440,46 +442,54 @@ export default class VirtualFooterPlugin extends Plugin {
 
 		for (const currentRule of this.settings.rules) {
 			let isMatch = false;
-			// Ensure recursive is a boolean, normalized by saveSettings/normalizeRule
 			const ruleRecursive = currentRule.recursive === undefined ? true : currentRule.recursive;
 
 
 			if (currentRule.type === RuleType.Folder && currentRule.path !== undefined) {
-				if (currentRule.path === "") { // Rule for all files
-					isMatch = true; // `recursive` flag is effectively true here
-				} else if (currentRule.path === "/") { // Rule for root folder
-					if (ruleRecursive) { // Recursive root means all files
+				if (currentRule.path === "") { 
+					isMatch = true; 
+				} else if (currentRule.path === "/") { 
+					if (ruleRecursive) { 
 						isMatch = true;
-					} else { // Non-recursive root: only files directly in the root
+					} else { 
 						if (file.parent && file.parent.isRoot()) {
 							isMatch = true;
 						}
 					}
-				} else { // Rule for a specific folder (e.g., "Notes" or "Projects/A")
+				} else { 
 					let normalizedRuleFolderPath = currentRule.path;
 					if (normalizedRuleFolderPath.endsWith('/')) {
 						normalizedRuleFolderPath = normalizedRuleFolderPath.slice(0, -1);
 					}
-					// At this point, normalizedRuleFolderPath is like "Notes" or "Projects/Alpha"
-					// It won't be "" or "/" due to the preceding conditions.
-
+					
 					if (ruleRecursive) {
-						// File path must start with "FolderName/" or "Folder/Subfolder/"
 						const prefixToMatch = normalizedRuleFolderPath + '/';
 						if (file.path.startsWith(prefixToMatch)) {
 							isMatch = true;
 						}
 					} else {
-						// Non-recursive: file's parent path must exactly match the rule's folder path.
-						// file.parent.path is "" for root, or "FolderName" for "FolderName/file.md"
 						if (file.parent && file.parent.path === normalizedRuleFolderPath) {
 							isMatch = true;
 						}
 					}
 				}
 			} else if (currentRule.type === RuleType.Tag && currentRule.tag && fileTags) {
-				if (fileTags.includes(currentRule.tag)) {
-					isMatch = true;
+				const ruleTag = currentRule.tag;
+				// includeSubtags is guaranteed to be boolean by normalizeRule
+				const includeSubtags = currentRule.includeSubtags!; 
+
+				for (const fileTag of fileTags) {
+					if (includeSubtags) {
+						if (fileTag === ruleTag || fileTag.startsWith(ruleTag + '/')) {
+							isMatch = true;
+							break;
+						}
+					} else {
+						if (fileTag === ruleTag) {
+							isMatch = true;
+							break;
+						}
+					}
 				}
 			}
 
@@ -611,15 +621,16 @@ export default class VirtualFooterPlugin extends Plugin {
 			contentSource: contentSource,
 			footerText: loadedRule.footerText || '', 
 			renderLocation: loadedRule.renderLocation || globalRenderLocation || DEFAULT_SETTINGS.rules[0].renderLocation,
-			recursive: loadedRule.recursive !== undefined ? loadedRule.recursive : true, // Default to true for backward compatibility
+			recursive: loadedRule.recursive !== undefined ? loadedRule.recursive : true, 
 		};
 
 		if (migratedRule.type === RuleType.Folder) {
 			migratedRule.path = loadedRule.path !== undefined ? loadedRule.path :
 				(loadedRule.folderPath !== undefined ? loadedRule.folderPath : DEFAULT_SETTINGS.rules[0].path); 
-		} else { 
+		} else { // RuleType.Tag
 			migratedRule.tag = loadedRule.tag !== undefined ? loadedRule.tag : '';
-			delete migratedRule.recursive; // Not applicable for Tag type
+			migratedRule.includeSubtags = loadedRule.includeSubtags !== undefined ? loadedRule.includeSubtags : false; // Default to false for old tag rules
+			delete migratedRule.recursive; 
 		}
 
 		if (migratedRule.contentSource === ContentSource.File) {
@@ -640,17 +651,18 @@ export default class VirtualFooterPlugin extends Plugin {
 
 		if (rule.type === RuleType.Folder) {
 			rule.path = rule.path === undefined ? (DEFAULT_SETTINGS.rules[0].path || '') : rule.path;
-			// If path is "", recursive is always true. Otherwise, default to true if undefined.
 			if (rule.path === "") {
 				rule.recursive = true;
 			} else {
 				rule.recursive = typeof rule.recursive === 'boolean' ? rule.recursive : true;
 			}
 			delete rule.tag; 
+			delete rule.includeSubtags;
 		} else { // RuleType.Tag
 			rule.tag = rule.tag === undefined ? '' : rule.tag;
+			rule.includeSubtags = typeof rule.includeSubtags === 'boolean' ? rule.includeSubtags : false; // Default to false
 			delete rule.path; 
-			delete rule.recursive; // Ensure recursive is not present for tag type
+			delete rule.recursive; 
 		}
 
 		rule.contentSource = rule.contentSource || DEFAULT_SETTINGS.rules[0].contentSource;
@@ -696,13 +708,13 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 	private getAvailableFolderPaths(): Set<string> {
 		if (this.allFolderPathsCache) return this.allFolderPathsCache;
 
-		const paths = new Set<string>(['/']); 
+		const paths = new Set<string>(['/', '']); // Added "" for "all files"
 		this.app.vault.getAllLoadedFiles().forEach(file => {
 			if (file.parent) { 
 				const parentPath = file.parent.isRoot() ? '/' : (file.parent.path.endsWith('/') ? file.parent.path : file.parent.path + '/');
-				if (parentPath !== '/') paths.add(parentPath);
+				if (parentPath !== '/') paths.add(parentPath); // Avoid adding '/' twice if root has files
 			}
-			if ('children' in file && file.path !== '/') { 
+			if ('children' in file && file.path !== '/') { // It's a folder and not the root
 				const folderPath = file.path.endsWith('/') ? file.path : file.path + '/';
 				paths.add(folderPath);
 			}
@@ -784,7 +796,9 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 				.setCta() 
 				.setClass('virtual-footer-add-button')
 				.onClick(async () => {
-					this.plugin.settings.rules.push(JSON.parse(JSON.stringify(DEFAULT_SETTINGS.rules[0])));
+					const newRule = JSON.parse(JSON.stringify(DEFAULT_SETTINGS.rules[0]));
+					this.plugin.normalizeRule(newRule); // Ensure it's fully initialized
+					this.plugin.settings.rules.push(newRule);
 					await this.plugin.saveSettings();
 					this.display(); 
 				}));
@@ -823,33 +837,28 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 						.setValue(rule.path || '')
 						.onChange(async (value) => {
 							rule.path = value;
-							// Normalizing here ensures recursive is set correctly if path becomes ""
 							this.plugin.normalizeRule(rule);
 							await this.plugin.saveSettings();
-							this.display(); // Re-render to update recursive toggle state
+							this.display(); 
 						});
 					new MultiSuggest(text.inputEl, this.getAvailableFolderPaths(), (selectedPath) => {
 						rule.path = selectedPath;
 						this.plugin.normalizeRule(rule);
 						text.setValue(selectedPath); 
 						this.plugin.saveSettings();
-						this.display(); // Re-render
+						this.display(); 
 					}, this.plugin.app);
 				});
 			
-			// Setting for recursive matching (only for Folder type)
 			new Setting(ruleDiv)
 				.setName('Include subfolders (recursive)')
 				.setDesc('If enabled, rule applies to files in subfolders. For "all files" (empty path), this is always true. For root path ("/"), enabling applies to all vault files, disabling applies only to files directly in the root.')
 				.addToggle(toggle => {
-					// rule.recursive is guaranteed to be boolean by normalizeRule
 					toggle.setValue(rule.recursive!) 
 						.onChange(async (value) => {
 							rule.recursive = value;
 							await this.plugin.saveSettings();
-							// No need to redisplay for a toggle change unless other fields depend on it.
 						});
-					// If path is "", recursive is effectively always true and fixed by normalizeRule.
 					if (rule.path === "") {
 						toggle.setDisabled(true);
 					}
@@ -872,6 +881,19 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 						text.setValue(normalizedTag); 
 						this.plugin.saveSettings();
 					}, this.plugin.app);
+				});
+
+			// Setting for includeSubtags (only for Tag type)
+			new Setting(ruleDiv)
+				.setName('Include subtags')
+				.setDesc("If enabled, a rule for 'tag' will also apply to 'tag/subtag1', 'tag/subtag2/subtag3', etc. If disabled, it only applies to the exact tag.")
+				.addToggle(toggle => {
+					// rule.includeSubtags is guaranteed to be boolean by normalizeRule
+					toggle.setValue(rule.includeSubtags!)
+						.onChange(async (value) => {
+							rule.includeSubtags = value;
+							await this.plugin.saveSettings();
+						});
 				});
 		}
 
