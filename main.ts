@@ -12,10 +12,11 @@ import {
 } from 'obsidian';
 
 // --- Enums ---
-/** Defines the type of a rule, determining how it matches files (e.g., by folder or tag). */
+/** Defines the type of a rule, determining how it matches files (e.g., by folder, tag, or property). */
 enum RuleType {
 	Folder = 'folder',
 	Tag = 'tag',
+	Property = 'property', // Added
 }
 
 /** Defines the source of the content for a rule (e.g., direct text input or a markdown file). */
@@ -34,11 +35,11 @@ enum RenderLocation {
 
 /**
  * Represents a rule for injecting dynamic content into Markdown views.
- * Each rule specifies matching criteria (type: folder/tag), content source (text/file),
+ * Each rule specifies matching criteria (type: folder/tag/property), content source (text/file),
  * the content itself, and where it should be rendered (header/footer).
  */
 interface Rule {
-	/** The type of criteria for this rule (folder-based or tag-based). */
+	/** The type of criteria for this rule (folder-based, tag-based, or property-based). */
 	type: RuleType;
 	/** For 'folder' type: path to the folder. "" for all files, "/" for root. */
 	path?: string;
@@ -48,6 +49,10 @@ interface Rule {
 	recursive?: boolean;
 	/** For 'tag' type: whether to match subtags (e.g., 'tag' matches 'tag/subtag'). Defaults to false. */
 	includeSubtags?: boolean;
+	/** For 'property' type: the name of the frontmatter property. */
+	propertyName?: string;
+	/** For 'property' type: the value the frontmatter property should have. */
+	propertyValue?: string;
 	/** The source from which to get the content (direct text or a file). */
 	contentSource: ContentSource;
 	/** Direct text content if contentSource is 'text'. */
@@ -87,7 +92,7 @@ const DEFAULT_SETTINGS: VirtualFooterSettings = {
 		contentSource: ContentSource.Text,
 		footerText: '', // Empty content by default
 		renderLocation: RenderLocation.Footer, // Default to footer
-		// includeSubtags is not applicable for Folder type, normalizeRule will handle it.
+		// Other fields (tag, includeSubtags, propertyName, propertyValue) will be handled by normalizeRule
 	}],
 };
 
@@ -196,6 +201,16 @@ export default class VirtualFooterPlugin extends Plugin {
 		this.registerEvent(
 			this.app.workspace.on('layout-change', this.handleActiveViewChange)
 		);
+		// Refresh dynamic content when metadata changes (e.g. properties)
+		this.registerEvent(
+			this.app.metadataCache.on('changed', (file) => {
+				const activeFile = this.app.workspace.getActiveFile();
+				if (activeFile && activeFile.path === file.path) {
+					this.handleActiveViewChange();
+				}
+			})
+		);
+
 
 		// Process the currently active view on load
 		this.handleActiveViewChange();
@@ -337,7 +352,7 @@ export default class VirtualFooterPlugin extends Plugin {
 					cmContentContainer.parentElement.insertBefore(groupDiv, cmContentContainer);
 					injectionSuccessful = true;
 				}
-			} else { 
+			} else {
 				const targetParent = view.containerEl.querySelector<HTMLElement>(SELECTOR_EDITOR_SIZER);
 				if (targetParent) {
 					targetParent.appendChild(groupDiv);
@@ -349,7 +364,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		if (injectionSuccessful) {
 			this.attachInternalLinkHandlers(groupDiv, sourcePath, component);
 		} else {
-			component.unload(); 
+			component.unload();
 			console.warn(`VirtualFooter: Failed to find injection point for dynamic content group (${renderLocation}). View mode: ${viewState.mode}.`);
 		}
 	}
@@ -384,14 +399,14 @@ export default class VirtualFooterPlugin extends Plugin {
 	 */
 	private async removeInjectedContentDOM(containerEl: HTMLElement): Promise<void> {
 		SELECTORS_POTENTIAL_DYNAMIC_CONTENT_PARENTS.forEach(selector => {
-			const parentElements = containerEl.querySelectorAll(selector); 
-			parentElements.forEach(parentEl => { 
+			const parentElements = containerEl.querySelectorAll(selector);
+			parentElements.forEach(parentEl => {
 				parentEl.querySelectorAll(`.${CSS_DYNAMIC_CONTENT_ELEMENT}`).forEach(el => {
 					const componentHolder = el as HTMLElementWithComponent;
 					if (componentHolder.component) {
-						componentHolder.component.unload(); 
+						componentHolder.component.unload();
 					}
-					el.remove(); 
+					el.remove();
 				});
 			});
 		});
@@ -402,8 +417,8 @@ export default class VirtualFooterPlugin extends Plugin {
 	 * @param view The MarkdownView to clean.
 	 */
 	private async removeDynamicContentFromView(view: MarkdownView): Promise<void> {
-		this.removeLivePreviewFooterStyles(view); 
-		await this.removeInjectedContentDOM(view.containerEl); 
+		this.removeLivePreviewFooterStyles(view);
+		await this.removeInjectedContentDOM(view.containerEl);
 	}
 
 	/**
@@ -427,7 +442,7 @@ export default class VirtualFooterPlugin extends Plugin {
 	private async _getApplicableRulesAndContent(filePath: string): Promise<Array<{ rule: Rule; contentText: string }>> {
 		const allApplicable: Array<{ rule: Rule; contentText: string }> = [];
 		const abstractFile = this.app.vault.getAbstractFileByPath(filePath);
-		
+
 		if (!(abstractFile instanceof TFile)) {
 			return [];
 		}
@@ -446,22 +461,22 @@ export default class VirtualFooterPlugin extends Plugin {
 
 
 			if (currentRule.type === RuleType.Folder && currentRule.path !== undefined) {
-				if (currentRule.path === "") { 
-					isMatch = true; 
-				} else if (currentRule.path === "/") { 
-					if (ruleRecursive) { 
+				if (currentRule.path === "") {
+					isMatch = true;
+				} else if (currentRule.path === "/") {
+					if (ruleRecursive) {
 						isMatch = true;
-					} else { 
+					} else {
 						if (file.parent && file.parent.isRoot()) {
 							isMatch = true;
 						}
 					}
-				} else { 
+				} else {
 					let normalizedRuleFolderPath = currentRule.path;
 					if (normalizedRuleFolderPath.endsWith('/')) {
 						normalizedRuleFolderPath = normalizedRuleFolderPath.slice(0, -1);
 					}
-					
+
 					if (ruleRecursive) {
 						const prefixToMatch = normalizedRuleFolderPath + '/';
 						if (file.path.startsWith(prefixToMatch)) {
@@ -476,7 +491,7 @@ export default class VirtualFooterPlugin extends Plugin {
 			} else if (currentRule.type === RuleType.Tag && currentRule.tag && fileTags) {
 				const ruleTag = currentRule.tag;
 				// includeSubtags is guaranteed to be boolean by normalizeRule
-				const includeSubtags = currentRule.includeSubtags!; 
+				const includeSubtags = currentRule.includeSubtags!;
 
 				for (const fileTag of fileTags) {
 					if (includeSubtags) {
@@ -491,7 +506,30 @@ export default class VirtualFooterPlugin extends Plugin {
 						}
 					}
 				}
+			} else if (currentRule.type === RuleType.Property && currentRule.propertyName && fileCache?.frontmatter) {
+				const propertyKey = currentRule.propertyName;
+				const expectedPropertyValue = currentRule.propertyValue; // This is a string from settings
+
+				const actualPropertyValue = fileCache.frontmatter[propertyKey];
+
+				if (actualPropertyValue !== undefined && actualPropertyValue !== null) {
+					if (typeof actualPropertyValue === 'string') {
+						if (actualPropertyValue === expectedPropertyValue) {
+							isMatch = true;
+						}
+					} else if (Array.isArray(actualPropertyValue)) {
+						// Check if any element in the array (when stringified) matches the expected string value
+						if (actualPropertyValue.map(String).includes(expectedPropertyValue!)) {
+							isMatch = true;
+						}
+					} else if (typeof actualPropertyValue === 'number' || typeof actualPropertyValue === 'boolean') {
+						if (String(actualPropertyValue) === expectedPropertyValue) {
+							isMatch = true;
+						}
+					}
+				}
 			}
+
 
 			if (isMatch) {
 				const contentText = await this._fetchContentForRule(currentRule);
@@ -514,14 +552,14 @@ export default class VirtualFooterPlugin extends Plugin {
 					return await this.app.vault.cachedRead(file);
 				} catch (error) {
 					console.error(`VirtualFooter: Error reading content file ${rule.footerFilePath}`, error);
-					return ""; 
+					return "";
 				}
 			} else {
 				console.warn(`VirtualFooter: Content file not found for rule: ${rule.footerFilePath}`);
-				return ""; 
+				return "";
 			}
 		}
-		return rule.footerText || ""; 
+		return rule.footerText || "";
 	}
 
 
@@ -534,30 +572,30 @@ export default class VirtualFooterPlugin extends Plugin {
 	 */
 	private attachInternalLinkHandlers(container: HTMLElement, sourcePath: string, component: Component): void {
 		component.registerDomEvent(container, 'click', (event: MouseEvent) => {
-			if (event.button !== 0) return; 
+			if (event.button !== 0) return;
 			const target = event.target as HTMLElement;
 			const linkElement = target.closest('a.internal-link') as HTMLAnchorElement;
 
 			if (linkElement) {
-				event.preventDefault(); 
-				const href = linkElement.dataset.href; 
+				event.preventDefault();
+				const href = linkElement.dataset.href;
 				if (href) {
-					const inNewPane = event.ctrlKey || event.metaKey; 
+					const inNewPane = event.ctrlKey || event.metaKey;
 					this.app.workspace.openLinkText(href, sourcePath, inNewPane);
 				}
 			}
 		});
 
 		component.registerDomEvent(container, 'auxclick', (event: MouseEvent) => {
-			if (event.button !== 1) return; 
+			if (event.button !== 1) return;
 			const target = event.target as HTMLElement;
 			const linkElement = target.closest('a.internal-link') as HTMLAnchorElement;
 
 			if (linkElement) {
-				event.preventDefault(); 
+				event.preventDefault();
 				const href = linkElement.dataset.href;
 				if (href) {
-					this.app.workspace.openLinkText(href, sourcePath, true); 
+					this.app.workspace.openLinkText(href, sourcePath, true);
 				}
 			}
 		});
@@ -599,12 +637,12 @@ export default class VirtualFooterPlugin extends Plugin {
 	 */
 	private _migrateRule(loadedRule: any, globalRenderLocation?: RenderLocation): Rule {
 		let type: RuleType;
-		if (loadedRule.type === RuleType.Folder || loadedRule.type === RuleType.Tag) {
+		if (loadedRule.type === RuleType.Folder || loadedRule.type === RuleType.Tag || loadedRule.type === RuleType.Property) {
 			type = loadedRule.type;
-		} else if (typeof loadedRule.folderPath === 'string') { 
+		} else if (typeof loadedRule.folderPath === 'string') {
 			type = RuleType.Folder;
 		} else {
-			type = DEFAULT_SETTINGS.rules[0].type; 
+			type = DEFAULT_SETTINGS.rules[0].type;
 		}
 
 		let contentSource: ContentSource;
@@ -613,25 +651,28 @@ export default class VirtualFooterPlugin extends Plugin {
 		} else {
 			contentSource = (typeof loadedRule.folderPath === 'string' && loadedRule.contentSource === undefined)
 				? ContentSource.Text
-				: DEFAULT_SETTINGS.rules[0].contentSource; 
+				: DEFAULT_SETTINGS.rules[0].contentSource;
 		}
 
 		const migratedRule: Rule = {
 			type: type,
 			contentSource: contentSource,
-			footerText: loadedRule.footerText || '', 
+			footerText: loadedRule.footerText || '',
 			renderLocation: loadedRule.renderLocation || globalRenderLocation || DEFAULT_SETTINGS.rules[0].renderLocation,
-			recursive: loadedRule.recursive !== undefined ? loadedRule.recursive : true, 
+			recursive: loadedRule.recursive !== undefined ? loadedRule.recursive : true,
 		};
 
 		if (migratedRule.type === RuleType.Folder) {
 			migratedRule.path = loadedRule.path !== undefined ? loadedRule.path :
-				(loadedRule.folderPath !== undefined ? loadedRule.folderPath : DEFAULT_SETTINGS.rules[0].path); 
-		} else { // RuleType.Tag
+				(loadedRule.folderPath !== undefined ? loadedRule.folderPath : DEFAULT_SETTINGS.rules[0].path);
+		} else if (migratedRule.type === RuleType.Tag) {
 			migratedRule.tag = loadedRule.tag !== undefined ? loadedRule.tag : '';
-			migratedRule.includeSubtags = loadedRule.includeSubtags !== undefined ? loadedRule.includeSubtags : false; // Default to false for old tag rules
-			delete migratedRule.recursive; 
+			migratedRule.includeSubtags = loadedRule.includeSubtags !== undefined ? loadedRule.includeSubtags : false;
+		} else if (migratedRule.type === RuleType.Property) {
+			migratedRule.propertyName = loadedRule.propertyName || '';
+			migratedRule.propertyValue = loadedRule.propertyValue || '';
 		}
+
 
 		if (migratedRule.contentSource === ContentSource.File) {
 			migratedRule.footerFilePath = loadedRule.footerFilePath || '';
@@ -642,7 +683,7 @@ export default class VirtualFooterPlugin extends Plugin {
 
 	/**
 	 * Normalizes a rule to ensure all necessary fields are present and correctly initialized.
-	 * Also handles mutually exclusive fields (e.g., `path` vs `tag`).
+	 * Also handles mutually exclusive fields (e.g., `path` vs `tag` vs `propertyName`).
 	 * This is called after migration or when new rules are created/modified.
 	 * @param rule The rule object to normalize.
 	 */
@@ -656,14 +697,26 @@ export default class VirtualFooterPlugin extends Plugin {
 			} else {
 				rule.recursive = typeof rule.recursive === 'boolean' ? rule.recursive : true;
 			}
-			delete rule.tag; 
+			delete rule.tag;
 			delete rule.includeSubtags;
-		} else { // RuleType.Tag
+			delete rule.propertyName;
+			delete rule.propertyValue;
+		} else if (rule.type === RuleType.Tag) {
 			rule.tag = rule.tag === undefined ? '' : rule.tag;
-			rule.includeSubtags = typeof rule.includeSubtags === 'boolean' ? rule.includeSubtags : false; // Default to false
-			delete rule.path; 
-			delete rule.recursive; 
+			rule.includeSubtags = typeof rule.includeSubtags === 'boolean' ? rule.includeSubtags : false;
+			delete rule.path;
+			delete rule.recursive;
+			delete rule.propertyName;
+			delete rule.propertyValue;
+		} else if (rule.type === RuleType.Property) {
+			rule.propertyName = rule.propertyName === undefined ? '' : rule.propertyName;
+			rule.propertyValue = rule.propertyValue === undefined ? '' : rule.propertyValue;
+			delete rule.path;
+			delete rule.recursive;
+			delete rule.tag;
+			delete rule.includeSubtags;
 		}
+
 
 		rule.contentSource = rule.contentSource || DEFAULT_SETTINGS.rules[0].contentSource;
 		rule.footerText = rule.footerText || '';
@@ -672,7 +725,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		if (rule.contentSource === ContentSource.File) {
 			rule.footerFilePath = rule.footerFilePath || '';
 		} else {
-			delete rule.footerFilePath; 
+			delete rule.footerFilePath;
 		}
 	}
 
@@ -695,6 +748,8 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 	private allFolderPathsCache: Set<string> | null = null;
 	private allTagsCache: Set<string> | null = null;
 	private allMarkdownFilePathsCache: Set<string> | null = null;
+	private allPropertyNamesCache: Set<string> | null = null;
+
 
 	constructor(app: App, private plugin: VirtualFooterPlugin) {
 		super(app, plugin);
@@ -710,7 +765,7 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 
 		const paths = new Set<string>(['/', '']); // Added "" for "all files"
 		this.app.vault.getAllLoadedFiles().forEach(file => {
-			if (file.parent) { 
+			if (file.parent) {
 				const parentPath = file.parent.isRoot() ? '/' : (file.parent.path.endsWith('/') ? file.parent.path : file.parent.path + '/');
 				if (parentPath !== '/') paths.add(parentPath); // Avoid adding '/' twice if root has files
 			}
@@ -734,9 +789,9 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 		this.app.vault.getMarkdownFiles().forEach(file => {
 			const fileCache = this.app.metadataCache.getFileCache(file);
 			if (fileCache) {
-				const tagsInFile = getAllTags(fileCache); 
+				const tagsInFile = getAllTags(fileCache);
 				tagsInFile?.forEach(tag => {
-					collectedTags.add(tag.substring(1)); 
+					collectedTags.add(tag.substring(1));
 				});
 			}
 		});
@@ -761,6 +816,19 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 	}
 
 	/**
+	 * Generates a set of all unique frontmatter property names in the vault.
+	 * @returns A Set of available property names.
+	 */
+	private getAvailablePropertyNames(): Set<string> {
+		if (this.allPropertyNamesCache) return this.allPropertyNamesCache;
+		// @ts-ignore - app.metadataCache.getFrontmatterPropertyKeys() is available in recent Obsidian APIs
+		const keys = this.app.metadataCache.getFrontmatterPropertyKeys?.() || [];
+		this.allPropertyNamesCache = new Set(keys);
+		return this.allPropertyNamesCache;
+	}
+
+
+	/**
 	 * Renders the settings tab UI.
 	 * Clears existing content and rebuilds the settings form.
 	 */
@@ -771,9 +839,11 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 		this.allFolderPathsCache = null;
 		this.allTagsCache = null;
 		this.allMarkdownFilePathsCache = null;
+		this.allPropertyNamesCache = null;
+
 
 		containerEl.createEl('h2', { text: 'Virtual Content Settings' });
-		containerEl.createEl('p', { text: 'Define rules to dynamically add content to the header or footer of notes based on their folder or tags.' });
+		containerEl.createEl('p', { text: 'Define rules to dynamically add content to the header or footer of notes based on their folder, tags, or properties.' });
 
 
 		containerEl.createEl('h3', { text: 'Rules' });
@@ -793,14 +863,14 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.addButton(button => button
 				.setButtonText('Add new rule')
-				.setCta() 
+				.setCta()
 				.setClass('virtual-footer-add-button')
 				.onClick(async () => {
 					const newRule = JSON.parse(JSON.stringify(DEFAULT_SETTINGS.rules[0]));
 					this.plugin.normalizeRule(newRule); // Ensure it's fully initialized
 					this.plugin.settings.rules.push(newRule);
 					await this.plugin.saveSettings();
-					this.display(); 
+					this.display();
 				}));
 	}
 
@@ -816,16 +886,17 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 
 		new Setting(ruleDiv)
 			.setName('Rule type')
-			.setDesc('Apply this rule based on folder or tag.')
+			.setDesc('Apply this rule based on folder, tag, or property.')
 			.addDropdown(dropdown => dropdown
 				.addOption(RuleType.Folder, 'Folder')
 				.addOption(RuleType.Tag, 'Tag')
+				.addOption(RuleType.Property, 'Property') // Added
 				.setValue(rule.type)
 				.onChange(async (value: string) => {
 					rule.type = value as RuleType;
-					this.plugin.normalizeRule(rule); 
+					this.plugin.normalizeRule(rule);
 					await this.plugin.saveSettings();
-					this.display(); 
+					this.display();
 				}));
 
 		if (rule.type === RuleType.Folder) {
@@ -839,22 +910,22 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 							rule.path = value;
 							this.plugin.normalizeRule(rule);
 							await this.plugin.saveSettings();
-							this.display(); 
+							this.display();
 						});
 					new MultiSuggest(text.inputEl, this.getAvailableFolderPaths(), (selectedPath) => {
 						rule.path = selectedPath;
 						this.plugin.normalizeRule(rule);
-						text.setValue(selectedPath); 
+						text.setValue(selectedPath);
 						this.plugin.saveSettings();
-						this.display(); 
+						this.display();
 					}, this.plugin.app);
 				});
-			
+
 			new Setting(ruleDiv)
 				.setName('Include subfolders (recursive)')
 				.setDesc('If enabled, rule applies to files in subfolders. For "all files" (empty path), this is always true. For root path ("/"), enabling applies to all vault files, disabling applies only to files directly in the root.')
 				.addToggle(toggle => {
-					toggle.setValue(rule.recursive!) 
+					toggle.setValue(rule.recursive!)
 						.onChange(async (value) => {
 							rule.recursive = value;
 							await this.plugin.saveSettings();
@@ -872,13 +943,13 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 					text.setPlaceholder('e.g., important or project/alpha')
 						.setValue(rule.tag || '')
 						.onChange(async (value) => {
-							rule.tag = value.startsWith('#') ? value.substring(1) : value; 
+							rule.tag = value.startsWith('#') ? value.substring(1) : value;
 							await this.plugin.saveSettings();
 						});
 					new MultiSuggest(text.inputEl, this.getAvailableTags(), (selectedTag) => {
 						const normalizedTag = selectedTag.startsWith('#') ? selectedTag.substring(1) : selectedTag;
 						rule.tag = normalizedTag;
-						text.setValue(normalizedTag); 
+						text.setValue(normalizedTag);
 						this.plugin.saveSettings();
 					}, this.plugin.app);
 				});
@@ -895,7 +966,36 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 							await this.plugin.saveSettings();
 						});
 				});
+		} else if (rule.type === RuleType.Property) { // Added section for Property
+			new Setting(ruleDiv)
+				.setName('Property name')
+				.setDesc('The name of the Obsidian property (frontmatter key) to match.')
+				.addText(text => {
+					text.setPlaceholder('e.g., status, type, author')
+						.setValue(rule.propertyName || '')
+						.onChange(async (value) => {
+							rule.propertyName = value;
+							await this.plugin.saveSettings();
+						});
+					new MultiSuggest(text.inputEl, this.getAvailablePropertyNames(), (selectedName) => {
+						rule.propertyName = selectedName;
+						text.setValue(selectedName);
+						this.plugin.saveSettings();
+					}, this.plugin.app);
+				});
+
+			new Setting(ruleDiv)
+				.setName('Property value')
+				.setDesc('The value the property should have. For list/array properties, matches if this value is one of the items.')
+				.addText(text => text
+					.setPlaceholder('e.g., complete, article, John Doe')
+					.setValue(rule.propertyValue || '')
+					.onChange(async (value) => {
+						rule.propertyValue = value;
+						await this.plugin.saveSettings();
+					}));
 		}
+
 
 		new Setting(ruleDiv)
 			.setName('Content source')
@@ -903,12 +1003,12 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 			.addDropdown(dropdown => dropdown
 				.addOption(ContentSource.Text, 'Direct text')
 				.addOption(ContentSource.File, 'Markdown file')
-				.setValue(rule.contentSource || ContentSource.Text) 
+				.setValue(rule.contentSource || ContentSource.Text)
 				.onChange(async (value: string) => {
 					rule.contentSource = value as ContentSource;
-					this.plugin.normalizeRule(rule); 
+					this.plugin.normalizeRule(rule);
 					await this.plugin.saveSettings();
-					this.display(); 
+					this.display();
 				}));
 
 		if (rule.contentSource === ContentSource.File) {
@@ -924,11 +1024,11 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 						});
 					new MultiSuggest(text.inputEl, this.getAvailableMarkdownFilePaths(), (selectedPath) => {
 						rule.footerFilePath = selectedPath;
-						text.setValue(selectedPath); 
+						text.setValue(selectedPath);
 						this.plugin.saveSettings();
 					}, this.plugin.app);
 				});
-		} else { 
+		} else {
 			new Setting(ruleDiv)
 				.setName('Content text')
 				.setDesc('Markdown text to display. This will be rendered.')
@@ -947,7 +1047,7 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 			.addDropdown(dropdown => dropdown
 				.addOption(RenderLocation.Footer, 'Footer')
 				.addOption(RenderLocation.Header, 'Header')
-				.setValue(rule.renderLocation || RenderLocation.Footer) 
+				.setValue(rule.renderLocation || RenderLocation.Footer)
 				.onChange(async (value: string) => {
 					rule.renderLocation = value as RenderLocation;
 					await this.plugin.saveSettings();
@@ -956,12 +1056,12 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 		new Setting(ruleDiv)
 			.addButton(button => button
 				.setButtonText('Delete rule')
-				.setWarning() 
+				.setWarning()
 				.setClass('virtual-footer-delete-button')
 				.onClick(async () => {
-					this.plugin.settings.rules.splice(index, 1); 
+					this.plugin.settings.rules.splice(index, 1);
 					await this.plugin.saveSettings();
-					this.display(); 
+					this.display();
 				}));
 
 		ruleDiv.createEl('hr', { cls: 'virtual-footer-rule-divider' });
