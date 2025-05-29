@@ -1,6 +1,6 @@
 # Virtual Footer
 
-Set rules to add markdown text to the bottom of each file in a folder. This text get's rendered normally, including dataview blocks.
+Set rules to add markdown text to the bottom (or top) of each file in a folder, or based on a tag present in them. This text get's rendered normally, including dataview blocks.
 Your notes don't get modified or changed, the given markdown text is simply rendered "virtually".
 
 This is especially useful if you have many files with the same dataview block. Instead of pasting the datview codeblock into every note, you can simply add it with this plugin.
