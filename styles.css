@@ -12,7 +12,7 @@
     flex: 0 1 auto !important;
 }
 
-.virtual-footer-dynamic-content-element {
+.virtual-footer-footer-rendered-content{
     min-height: 528px;
 }
 
