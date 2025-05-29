@@ -71,11 +71,14 @@ const DEFAULT_SETTINGS: VirtualFooterSettings = {
 };
 
 // CSS Classes
-const CSS_DYNAMIC_CONTENT_ELEMENT = 'virtual-footer-dynamic-content-element';
-const CSS_HEADER_RENDERED_CONTENT = 'virtual-footer-header-rendered-content';
-const CSS_FOOTER_RENDERED_CONTENT = 'virtual-footer-footer-rendered-content';
+const CSS_DYNAMIC_CONTENT_ELEMENT = 'virtual-footer-dynamic-content-element'; // Applied to group elements
+const CSS_HEADER_RENDERED_CONTENT = 'virtual-footer-header-rendered-content'; // Applied to header group
+const CSS_FOOTER_RENDERED_CONTENT = 'virtual-footer-footer-rendered-content'; // Applied to footer group
 const CSS_VIRTUAL_FOOTER_CM_PADDING = 'virtual-footer-cm-padding'; // For Live Preview footer spacing
 const CSS_VIRTUAL_FOOTER_REMOVE_FLEX = 'virtual-footer-remove-flex'; // For Live Preview footer styling
+
+const CSS_HEADER_GROUP_ELEMENT = 'virtual-footer-header-group';
+const CSS_FOOTER_GROUP_ELEMENT = 'virtual-footer-footer-group';
 
 // DOM Selectors
 const SELECTOR_EDITOR_CONTENT_AREA = '.cm-editor .cm-content'; // Live Preview content area
@@ -157,7 +160,6 @@ export default class VirtualFooterPlugin extends Plugin {
 	async onunload() {
 		this.clearAllViewsDynamicContent();
 
-		// Remove any globally applied styles or elements not tied to a specific view's component
 		document.querySelectorAll(`.${CSS_DYNAMIC_CONTENT_ELEMENT}`).forEach(el => {
 			const componentHolder = el as HTMLElementWithComponent;
 			if (componentHolder.component) {
@@ -198,43 +200,64 @@ export default class VirtualFooterPlugin extends Plugin {
 		}
 
 		const state = view.getState();
-		let livePreviewFooterStylesApplied = false;
+		let combinedHeaderText = "";
+		let combinedFooterText = "";
+		let hasFooterRule = false;
+		const contentSeparator = "\n\n"; // Separator between content blocks
 
 		for (const { rule, contentText } of applicableRulesWithContent) {
-			// renderAndInjectContent will bail if contentText is empty.
-			const isRenderInHeader = rule.renderLocation === RenderLocation.Header;
+			if (!contentText || contentText.trim() === "") continue;
 
-			// Apply specific styles ONLY IF this rule will render in the footer in Live Preview.
-			// Apply only once per view processing pass.
-			if (state.mode === 'source' && !state.source && !isRenderInHeader && !livePreviewFooterStylesApplied) { // Live Preview mode, footer rendering
-				this.applyLivePreviewFooterStyles(view);
-				livePreviewFooterStylesApplied = true;
+			if (rule.renderLocation === RenderLocation.Header) {
+				combinedHeaderText += (combinedHeaderText ? contentSeparator : "") + contentText;
+			} else {
+				combinedFooterText += (combinedFooterText ? contentSeparator : "") + contentText;
+				hasFooterRule = true;
 			}
+		}
 
-			// Render and inject content if in Preview mode or Live Preview mode.
-			if (state.mode === 'preview' || (state.mode === 'source' && !state.source)) {
-				await this.renderAndInjectContent(view, contentText, rule.renderLocation);
+		// Apply Live Preview footer styles if any footer content exists and we are in Live Preview
+		if (state.mode === 'source' && !state.source && hasFooterRule) {
+			this.applyLivePreviewFooterStyles(view);
+		}
+
+		// Render and inject content groups if in Preview mode or Live Preview mode.
+		if (state.mode === 'preview' || (state.mode === 'source' && !state.source)) {
+			if (combinedHeaderText.trim()) {
+				await this.renderAndInjectGroupedContent(view, combinedHeaderText, RenderLocation.Header);
+			}
+			if (combinedFooterText.trim()) {
+				await this.renderAndInjectGroupedContent(view, combinedFooterText, RenderLocation.Footer);
 			}
 		}
 	}
 
 	/**
-	 * Renders the dynamic content based on rules and injects it into the specified view.
+	 * Renders the combined dynamic content into a group element and injects it into the specified view.
 	 * @param view The MarkdownView to inject content into.
-	 * @param contentText The text to render.
-	 * @param renderLocation Where to render the content.
+	 * @param combinedContentText The combined Markdown text to render.
+	 * @param renderLocation Where to render the content (Header or Footer).
 	 */
-	private async renderAndInjectContent(view: MarkdownView, contentText: string, renderLocation: RenderLocation): Promise<void> {
-		if (!contentText) {
-			// Do not remove all injected content here, as this function is now called per rule.
-			// If a specific rule has no content, it simply won't inject anything.
-			// Global cleanup is handled by removeDynamicContentFromView before processing rules.
+	private async renderAndInjectGroupedContent(view: MarkdownView, combinedContentText: string, renderLocation: RenderLocation): Promise<void> {
+		if (!combinedContentText || combinedContentText.trim() === "") {
 			return;
 		}
 
 		const isRenderInHeader = renderLocation === RenderLocation.Header;
 		const sourcePath = view.file?.path || '';
-		const { element: contentDiv, component } = await this.prepareContentElement(contentText, isRenderInHeader, sourcePath);
+
+		// Create the group element
+		const groupDiv = document.createElement('div');
+		groupDiv.className = CSS_DYNAMIC_CONTENT_ELEMENT; // Main class for identification and cleanup
+		groupDiv.classList.add(isRenderInHeader ? CSS_HEADER_GROUP_ELEMENT : CSS_FOOTER_GROUP_ELEMENT);
+		groupDiv.classList.add(isRenderInHeader ? CSS_HEADER_RENDERED_CONTENT : CSS_FOOTER_RENDERED_CONTENT);
+
+		const component = new Component();
+		component.load();
+		(groupDiv as HTMLElementWithComponent).component = component;
+
+		// Render the combined Markdown content into the group div
+		await MarkdownRenderer.render(this.app, combinedContentText, groupDiv, sourcePath, component);
 
 		let injectionSuccessful = false;
 		const state = view.getState();
@@ -244,55 +267,31 @@ export default class VirtualFooterPlugin extends Plugin {
 				isRenderInHeader ? SELECTOR_PREVIEW_HEADER_AREA : SELECTOR_PREVIEW_FOOTER_AREA
 			);
 			if (targetParent) {
-				targetParent.appendChild(contentDiv);
+				targetParent.appendChild(groupDiv);
 				injectionSuccessful = true;
 			}
 		} else if (state.mode === 'source' && !state.source) { // Live Preview editor mode
 			if (isRenderInHeader) {
 				const cmContentContainer = view.containerEl.querySelector<HTMLElement>(SELECTOR_LIVE_PREVIEW_CONTENT_CONTAINER);
 				if (cmContentContainer?.parentElement) {
-					cmContentContainer.parentElement.insertBefore(contentDiv, cmContentContainer);
+					cmContentContainer.parentElement.insertBefore(groupDiv, cmContentContainer);
 					injectionSuccessful = true;
 				}
 			} else { // Live Preview footer
 				const targetParent = view.containerEl.querySelector<HTMLElement>(SELECTOR_EDITOR_SIZER);
 				if (targetParent) {
-					targetParent.appendChild(contentDiv);
+					targetParent.appendChild(groupDiv);
 					injectionSuccessful = true;
 				}
 			}
 		}
 
 		if (injectionSuccessful) {
-			this.attachInternalLinkHandlers(contentDiv, sourcePath, component);
+			this.attachInternalLinkHandlers(groupDiv, sourcePath, component);
 		} else {
-			component.unload();
-			console.warn("VirtualFooter: Failed to find injection point for dynamic content for a rule.");
+			component.unload(); // Unload component if injection failed
+			console.warn(`VirtualFooter: Failed to find injection point for dynamic content group (${isRenderInHeader ? 'Header' : 'Footer'}).`);
 		}
-	}
-
-	/**
-	 * Creates the HTML element for the dynamic content and renders Markdown into it.
-	 * @param contentText The Markdown string to render.
-	 * @param isRenderInHeader True if rendering in the header, false for footer.
-	 * @param sourcePath The path of the file this content is for, used for Markdown rendering context.
-	 * @returns A promise that resolves to an object containing the HTMLElement and its associated Component.
-	 */
-	private async prepareContentElement(
-		contentText: string,
-		isRenderInHeader: boolean,
-		sourcePath: string
-	): Promise<{ element: HTMLElement; component: Component }> {
-		const contentDiv = document.createElement('div');
-		contentDiv.className = CSS_DYNAMIC_CONTENT_ELEMENT;
-		contentDiv.classList.add(isRenderInHeader ? CSS_HEADER_RENDERED_CONTENT : CSS_FOOTER_RENDERED_CONTENT);
-
-		const component = new Component();
-		component.load();
-		(contentDiv as HTMLElementWithComponent).component = component;
-
-		await MarkdownRenderer.render(this.app, contentText, contentDiv, sourcePath, component);
-		return { element: contentDiv, component };
 	}
 
 	/** Applies specific CSS classes for Live Preview footer rendering to improve layout. */
@@ -394,7 +393,6 @@ export default class VirtualFooterPlugin extends Plugin {
 
 			if (isMatch) {
 				const contentText = await this._fetchContentForRule(currentRule);
-				// Add the rule and its content. renderAndInjectContent will handle empty contentText by not rendering.
 				allApplicable.push({ rule: currentRule, contentText });
 			}
 		}
