@@ -12,7 +12,6 @@ import {
 } from 'obsidian';
 
 // --- Enums ---
-
 /** Defines the type of a rule, determining how it matches files (e.g., by folder or tag). */
 enum RuleType {
 	Folder = 'folder',
@@ -317,7 +316,12 @@ export default class VirtualFooterPlugin extends Plugin {
 		const viewState = view.getState();
 
 		if (viewState.mode === 'preview') { // Reading mode
-			const targetParent = view.containerEl.querySelector<HTMLElement>(
+			// Use view.previewMode.containerEl as the base for querySelector.
+			// This is typically the .markdown-preview-sizer element, which is the
+			// direct parent of .mod-header and .mod-footer in preview mode.
+			// This should be more robust against selecting elements from within embeds.
+			const previewContentParent = view.previewMode.containerEl;
+			const targetParent = previewContentParent.querySelector<HTMLElement>(
 				isRenderInHeader ? SELECTOR_PREVIEW_HEADER_AREA : SELECTOR_PREVIEW_FOOTER_AREA
 			);
 			if (targetParent) {
@@ -379,13 +383,15 @@ export default class VirtualFooterPlugin extends Plugin {
 	 */
 	private async removeInjectedContentDOM(containerEl: HTMLElement): Promise<void> {
 		SELECTORS_POTENTIAL_DYNAMIC_CONTENT_PARENTS.forEach(selector => {
-			const parentEl = containerEl.querySelector(selector);
-			parentEl?.querySelectorAll(`.${CSS_DYNAMIC_CONTENT_ELEMENT}`).forEach(el => {
-				const componentHolder = el as HTMLElementWithComponent;
-				if (componentHolder.component) {
-					componentHolder.component.unload(); // Unload the component
-				}
-				el.remove(); // Remove the element
+			const parentElements = containerEl.querySelectorAll(selector); // Use querySelectorAll to find all potential parents
+			parentElements.forEach(parentEl => { // Iterate over each found parent element
+				parentEl.querySelectorAll(`.${CSS_DYNAMIC_CONTENT_ELEMENT}`).forEach(el => {
+					const componentHolder = el as HTMLElementWithComponent;
+					if (componentHolder.component) {
+						componentHolder.component.unload(); // Unload the component
+					}
+					el.remove(); // Remove the element
+				});
 			});
 		});
 	}
