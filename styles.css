@@ -1,7 +1,7 @@
-.markdown-preview-view.is-readable-line-width .markdown-preview-sizer>div, .markdown-source-view.mod-cm6.is-readable-line-width .cm-contentContainer.cm-contentContainer>.cm-content>div, .markdown-source-view.mod-cm6.is-readable-line-width .cm-sizer>.virtual-footer, .markdown-source-view.mod-cm6.is-readable-line-width .cm-sizer>.inline-title, .markdown-source-view.mod-cm6.is-readable-line-width .cm-sizer>.metadata-container {
+.markdown-source-view.mod-cm6.is-readable-line-width .cm-sizer>.virtual-footer {
     max-width: var(--max-width);
     width: var(--line-width);
-    margin-inline: var(--content-margin) !important;
+    margin-inline: var(--content-margin);
 }
 
 .virtual-footer-cm-padding {
