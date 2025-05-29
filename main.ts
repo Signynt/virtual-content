@@ -44,6 +44,8 @@ interface Rule {
 	path?: string;
 	/** For 'tag' type: the tag name (without '#'). */
 	tag?: string;
+	/** For 'folder' type: whether to match subfolders. Defaults to true. Ignored if path is "". */
+	recursive?: boolean;
 	/** The source from which to get the content (direct text or a file). */
 	contentSource: ContentSource;
 	/** Direct text content if contentSource is 'text'. */
@@ -79,6 +81,7 @@ const DEFAULT_SETTINGS: VirtualFooterSettings = {
 	rules: [{
 		type: RuleType.Folder,
 		path: '', // Applies to all files by default
+		recursive: true, // Default to recursive for new folder rules
 		contentSource: ContentSource.Text,
 		footerText: '', // Empty content by default
 		renderLocation: RenderLocation.Footer, // Default to footer
@@ -316,10 +319,6 @@ export default class VirtualFooterPlugin extends Plugin {
 		const viewState = view.getState();
 
 		if (viewState.mode === 'preview') { // Reading mode
-			// Use view.previewMode.containerEl as the base for querySelector.
-			// This is typically the .markdown-preview-sizer element, which is the
-			// direct parent of .mod-header and .mod-footer in preview mode.
-			// This should be more robust against selecting elements from within embeds.
 			const previewContentParent = view.previewMode.containerEl;
 			const targetParent = previewContentParent.querySelector<HTMLElement>(
 				isRenderInHeader ? SELECTOR_PREVIEW_HEADER_AREA : SELECTOR_PREVIEW_FOOTER_AREA
@@ -330,13 +329,12 @@ export default class VirtualFooterPlugin extends Plugin {
 			}
 		} else if (viewState.mode === 'source' && !viewState.source) { // Live Preview editor mode
 			if (isRenderInHeader) {
-				// For Live Preview header, inject before the content container
 				const cmContentContainer = view.containerEl.querySelector<HTMLElement>(SELECTOR_LIVE_PREVIEW_CONTENT_CONTAINER);
 				if (cmContentContainer?.parentElement) {
 					cmContentContainer.parentElement.insertBefore(groupDiv, cmContentContainer);
 					injectionSuccessful = true;
 				}
-			} else { // Live Preview footer, inject into the sizer element
+			} else { 
 				const targetParent = view.containerEl.querySelector<HTMLElement>(SELECTOR_EDITOR_SIZER);
 				if (targetParent) {
 					targetParent.appendChild(groupDiv);
@@ -348,7 +346,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		if (injectionSuccessful) {
 			this.attachInternalLinkHandlers(groupDiv, sourcePath, component);
 		} else {
-			component.unload(); // Unload component if injection failed to prevent resource leaks
+			component.unload(); 
 			console.warn(`VirtualFooter: Failed to find injection point for dynamic content group (${renderLocation}). View mode: ${viewState.mode}.`);
 		}
 	}
@@ -383,14 +381,14 @@ export default class VirtualFooterPlugin extends Plugin {
 	 */
 	private async removeInjectedContentDOM(containerEl: HTMLElement): Promise<void> {
 		SELECTORS_POTENTIAL_DYNAMIC_CONTENT_PARENTS.forEach(selector => {
-			const parentElements = containerEl.querySelectorAll(selector); // Use querySelectorAll to find all potential parents
-			parentElements.forEach(parentEl => { // Iterate over each found parent element
+			const parentElements = containerEl.querySelectorAll(selector); 
+			parentElements.forEach(parentEl => { 
 				parentEl.querySelectorAll(`.${CSS_DYNAMIC_CONTENT_ELEMENT}`).forEach(el => {
 					const componentHolder = el as HTMLElementWithComponent;
 					if (componentHolder.component) {
-						componentHolder.component.unload(); // Unload the component
+						componentHolder.component.unload(); 
 					}
-					el.remove(); // Remove the element
+					el.remove(); 
 				});
 			});
 		});
@@ -401,8 +399,8 @@ export default class VirtualFooterPlugin extends Plugin {
 	 * @param view The MarkdownView to clean.
 	 */
 	private async removeDynamicContentFromView(view: MarkdownView): Promise<void> {
-		this.removeLivePreviewFooterStyles(view); // Remove any applied Live Preview styles
-		await this.removeInjectedContentDOM(view.containerEl); // Remove injected DOM elements
+		this.removeLivePreviewFooterStyles(view); 
+		await this.removeInjectedContentDOM(view.containerEl); 
 	}
 
 	/**
@@ -425,36 +423,61 @@ export default class VirtualFooterPlugin extends Plugin {
 	 */
 	private async _getApplicableRulesAndContent(filePath: string): Promise<Array<{ rule: Rule; contentText: string }>> {
 		const allApplicable: Array<{ rule: Rule; contentText: string }> = [];
-		const file = this.app.vault.getAbstractFileByPath(filePath);
-		let fileTags: string[] | null = null;
+		const abstractFile = this.app.vault.getAbstractFileByPath(filePath);
+		
+		if (!(abstractFile instanceof TFile)) {
+			// Not a TFile, so no rules should apply.
+			return [];
+		}
+		const file: TFile = abstractFile; // Now we know it's a TFile
 
-		// Extract tags if the file is a TFile and has metadata
-		if (file instanceof TFile) {
-			const fileCache = this.app.metadataCache.getFileCache(file);
-			if (fileCache) {
-				const allTagsInFileWithHash = getAllTags(fileCache); // Returns tags with '#' prefix
-				fileTags = allTagsInFileWithHash ? allTagsInFileWithHash.map(tag => tag.substring(1)) : [];
-			}
+		let fileTags: string[] | null = null;
+		const fileCache = this.app.metadataCache.getFileCache(file);
+		if (fileCache) {
+			const allTagsInFileWithHash = getAllTags(fileCache);
+			fileTags = allTagsInFileWithHash ? allTagsInFileWithHash.map(tag => tag.substring(1)) : [];
 		}
 
 		for (const currentRule of this.settings.rules) {
 			let isMatch = false;
+			// Ensure recursive is a boolean, normalized by saveSettings/normalizeRule
+			const ruleRecursive = currentRule.recursive === undefined ? true : currentRule.recursive;
+
 
 			if (currentRule.type === RuleType.Folder && currentRule.path !== undefined) {
-				if (currentRule.path === "") { // Rule with empty path applies to all files
-					isMatch = true;
+				if (currentRule.path === "") { // Rule for all files
+					isMatch = true; // `recursive` flag is effectively true here
 				} else if (currentRule.path === "/") { // Rule for root folder
-					if (file instanceof TFile && file.parent?.isRoot()) {
+					if (ruleRecursive) { // Recursive root means all files
 						isMatch = true;
+					} else { // Non-recursive root: only files directly in the root
+						if (file.parent && file.parent.isRoot()) {
+							isMatch = true;
+						}
 					}
-				} else { // Rule for a specific folder (and its subfolders)
-					const normalizedRulePath = currentRule.path.endsWith('/') ? currentRule.path : currentRule.path + '/';
-					if (filePath.startsWith(normalizedRulePath)) {
-						isMatch = true;
+				} else { // Rule for a specific folder (e.g., "Notes" or "Projects/A")
+					let normalizedRuleFolderPath = currentRule.path;
+					if (normalizedRuleFolderPath.endsWith('/')) {
+						normalizedRuleFolderPath = normalizedRuleFolderPath.slice(0, -1);
+					}
+					// At this point, normalizedRuleFolderPath is like "Notes" or "Projects/Alpha"
+					// It won't be "" or "/" due to the preceding conditions.
+
+					if (ruleRecursive) {
+						// File path must start with "FolderName/" or "Folder/Subfolder/"
+						const prefixToMatch = normalizedRuleFolderPath + '/';
+						if (file.path.startsWith(prefixToMatch)) {
+							isMatch = true;
+						}
+					} else {
+						// Non-recursive: file's parent path must exactly match the rule's folder path.
+						// file.parent.path is "" for root, or "FolderName" for "FolderName/file.md"
+						if (file.parent && file.parent.path === normalizedRuleFolderPath) {
+							isMatch = true;
+						}
 					}
 				}
 			} else if (currentRule.type === RuleType.Tag && currentRule.tag && fileTags) {
-				// Rule matches if any of the file's tags match the rule's tag
 				if (fileTags.includes(currentRule.tag)) {
 					isMatch = true;
 				}
@@ -481,15 +504,14 @@ export default class VirtualFooterPlugin extends Plugin {
 					return await this.app.vault.cachedRead(file);
 				} catch (error) {
 					console.error(`VirtualFooter: Error reading content file ${rule.footerFilePath}`, error);
-					return ""; // Return empty string on read error
+					return ""; 
 				}
 			} else {
 				console.warn(`VirtualFooter: Content file not found for rule: ${rule.footerFilePath}`);
-				return ""; // Return empty string if file not found
+				return ""; 
 			}
 		}
-		// For ContentSource.Text or if file path is missing for File source
-		return rule.footerText || ""; // Ensure footerText is not undefined/null
+		return rule.footerText || ""; 
 	}
 
 
@@ -501,33 +523,31 @@ export default class VirtualFooterPlugin extends Plugin {
 	 * @param component The Obsidian Component associated with this rendered content, to register DOM events for proper cleanup.
 	 */
 	private attachInternalLinkHandlers(container: HTMLElement, sourcePath: string, component: Component): void {
-		// Handle primary (left) click for internal links
 		component.registerDomEvent(container, 'click', (event: MouseEvent) => {
-			if (event.button !== 0) return; // Only process left-clicks
+			if (event.button !== 0) return; 
 			const target = event.target as HTMLElement;
 			const linkElement = target.closest('a.internal-link') as HTMLAnchorElement;
 
 			if (linkElement) {
-				event.preventDefault(); // Prevent default link navigation
-				const href = linkElement.dataset.href; // Obsidian stores link destination in data-href
+				event.preventDefault(); 
+				const href = linkElement.dataset.href; 
 				if (href) {
-					const inNewPane = event.ctrlKey || event.metaKey; // Open in new pane if Ctrl/Meta is pressed
+					const inNewPane = event.ctrlKey || event.metaKey; 
 					this.app.workspace.openLinkText(href, sourcePath, inNewPane);
 				}
 			}
 		});
 
-		// Handle auxiliary (middle) click for internal links (typically opens in new pane)
 		component.registerDomEvent(container, 'auxclick', (event: MouseEvent) => {
-			if (event.button !== 1) return; // Only process middle-clicks
+			if (event.button !== 1) return; 
 			const target = event.target as HTMLElement;
 			const linkElement = target.closest('a.internal-link') as HTMLAnchorElement;
 
 			if (linkElement) {
-				event.preventDefault(); // Prevent default link navigation
+				event.preventDefault(); 
 				const href = linkElement.dataset.href;
 				if (href) {
-					this.app.workspace.openLinkText(href, sourcePath, true); // Force open in new pane
+					this.app.workspace.openLinkText(href, sourcePath, true); 
 				}
 			}
 		});
@@ -540,11 +560,9 @@ export default class VirtualFooterPlugin extends Plugin {
 	 */
 	async loadSettings() {
 		const loadedData = await this.loadData();
-		// Start with a deep copy of default settings to ensure all new fields are present
 		this.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
 
 		if (loadedData) {
-			// Check for legacy global renderLocation (used before per-rule renderLocation)
 			const oldGlobalRenderLocation = loadedData.renderLocation as RenderLocation | undefined;
 
 			if (loadedData.rules && Array.isArray(loadedData.rules)) {
@@ -554,12 +572,9 @@ export default class VirtualFooterPlugin extends Plugin {
 			}
 		}
 
-		// Ensure there's at least one rule, applying defaults if necessary.
 		if (!this.settings.rules || this.settings.rules.length === 0) {
-			// DEFAULT_SETTINGS.rules[0] already includes all necessary fields, including renderLocation
 			this.settings.rules = [JSON.parse(JSON.stringify(DEFAULT_SETTINGS.rules[0]))];
 		} else {
-			// Normalize all loaded or migrated rules to ensure consistency
 			this.settings.rules.forEach(rule => this.normalizeRule(rule));
 		}
 	}
@@ -573,44 +588,40 @@ export default class VirtualFooterPlugin extends Plugin {
 	 * @returns A Rule object, migrated to the current format.
 	 */
 	private _migrateRule(loadedRule: any, globalRenderLocation?: RenderLocation): Rule {
-		// Determine RuleType, defaulting to Folder if ambiguous
 		let type: RuleType;
 		if (loadedRule.type === RuleType.Folder || loadedRule.type === RuleType.Tag) {
 			type = loadedRule.type;
-		} else if (typeof loadedRule.folderPath === 'string') { // Legacy field for folder path
+		} else if (typeof loadedRule.folderPath === 'string') { 
 			type = RuleType.Folder;
 		} else {
-			type = DEFAULT_SETTINGS.rules[0].type; // Fallback to default type
+			type = DEFAULT_SETTINGS.rules[0].type; 
 		}
 
-		// Determine ContentSource, defaulting to Text if ambiguous
 		let contentSource: ContentSource;
 		if (loadedRule.contentSource === ContentSource.Text || loadedRule.contentSource === ContentSource.File) {
 			contentSource = loadedRule.contentSource;
 		} else {
-			// Legacy: if folderPath existed and contentSource was undefined, it was likely Text
 			contentSource = (typeof loadedRule.folderPath === 'string' && loadedRule.contentSource === undefined)
 				? ContentSource.Text
-				: DEFAULT_SETTINGS.rules[0].contentSource; // Fallback to default source
+				: DEFAULT_SETTINGS.rules[0].contentSource; 
 		}
 
 		const migratedRule: Rule = {
 			type: type,
 			contentSource: contentSource,
-			footerText: loadedRule.footerText || '', // Retain name for compatibility
-			// Prioritize rule-specific renderLocation, then old global, then default
+			footerText: loadedRule.footerText || '', 
 			renderLocation: loadedRule.renderLocation || globalRenderLocation || DEFAULT_SETTINGS.rules[0].renderLocation,
+			recursive: loadedRule.recursive !== undefined ? loadedRule.recursive : true, // Default to true for backward compatibility
 		};
 
-		// Populate path or tag based on type
 		if (migratedRule.type === RuleType.Folder) {
 			migratedRule.path = loadedRule.path !== undefined ? loadedRule.path :
-				(loadedRule.folderPath !== undefined ? loadedRule.folderPath : DEFAULT_SETTINGS.rules[0].path); // Handle legacy folderPath
-		} else { // RuleType.Tag
+				(loadedRule.folderPath !== undefined ? loadedRule.folderPath : DEFAULT_SETTINGS.rules[0].path); 
+		} else { 
 			migratedRule.tag = loadedRule.tag !== undefined ? loadedRule.tag : '';
+			delete migratedRule.recursive; // Not applicable for Tag type
 		}
 
-		// Populate footerFilePath if content source is File
 		if (migratedRule.contentSource === ContentSource.File) {
 			migratedRule.footerFilePath = loadedRule.footerFilePath || '';
 		}
@@ -629,22 +640,27 @@ export default class VirtualFooterPlugin extends Plugin {
 
 		if (rule.type === RuleType.Folder) {
 			rule.path = rule.path === undefined ? (DEFAULT_SETTINGS.rules[0].path || '') : rule.path;
-			delete rule.tag; // Ensure tag is not present for folder type
+			// If path is "", recursive is always true. Otherwise, default to true if undefined.
+			if (rule.path === "") {
+				rule.recursive = true;
+			} else {
+				rule.recursive = typeof rule.recursive === 'boolean' ? rule.recursive : true;
+			}
+			delete rule.tag; 
 		} else { // RuleType.Tag
 			rule.tag = rule.tag === undefined ? '' : rule.tag;
-			delete rule.path; // Ensure path is not present for tag type
+			delete rule.path; 
+			delete rule.recursive; // Ensure recursive is not present for tag type
 		}
 
 		rule.contentSource = rule.contentSource || DEFAULT_SETTINGS.rules[0].contentSource;
-		// Retain 'footerText' for compatibility, even if content is for header
 		rule.footerText = rule.footerText || '';
 		rule.renderLocation = rule.renderLocation || DEFAULT_SETTINGS.rules[0].renderLocation;
 
 		if (rule.contentSource === ContentSource.File) {
-			// Retain 'footerFilePath' for compatibility
 			rule.footerFilePath = rule.footerFilePath || '';
 		} else {
-			delete rule.footerFilePath; // Ensure footerFilePath is not present for text source
+			delete rule.footerFilePath; 
 		}
 	}
 
@@ -653,10 +669,8 @@ export default class VirtualFooterPlugin extends Plugin {
 	 * Normalizes all rules before saving and triggers a refresh of the active view.
 	 */
 	async saveSettings() {
-		// Ensure all rules are in a consistent state before saving
 		this.settings.rules.forEach(rule => this.normalizeRule(rule));
 		await this.saveData(this.settings);
-		// Refresh the view to reflect any changes in settings
 		this.handleActiveViewChange();
 	}
 }
@@ -666,7 +680,6 @@ export default class VirtualFooterPlugin extends Plugin {
  * Allows users to configure rules for dynamic content injection.
  */
 class VirtualFooterSettingTab extends PluginSettingTab {
-	// Caches for suggestion providers to avoid re-calculating on every input
 	private allFolderPathsCache: Set<string> | null = null;
 	private allTagsCache: Set<string> | null = null;
 	private allMarkdownFilePathsCache: Set<string> | null = null;
@@ -683,14 +696,13 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 	private getAvailableFolderPaths(): Set<string> {
 		if (this.allFolderPathsCache) return this.allFolderPathsCache;
 
-		const paths = new Set<string>(['/']); // Add root path by default
+		const paths = new Set<string>(['/']); 
 		this.app.vault.getAllLoadedFiles().forEach(file => {
-			if (file.parent) { // Applies to TFile and TFolder (which have parents)
+			if (file.parent) { 
 				const parentPath = file.parent.isRoot() ? '/' : (file.parent.path.endsWith('/') ? file.parent.path : file.parent.path + '/');
 				if (parentPath !== '/') paths.add(parentPath);
 			}
-			// If the file itself is a folder (and not the root)
-			if ('children' in file && file.path !== '/') { // 'children' indicates a TFolder
+			if ('children' in file && file.path !== '/') { 
 				const folderPath = file.path.endsWith('/') ? file.path : file.path + '/';
 				paths.add(folderPath);
 			}
@@ -710,9 +722,9 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 		this.app.vault.getMarkdownFiles().forEach(file => {
 			const fileCache = this.app.metadataCache.getFileCache(file);
 			if (fileCache) {
-				const tagsInFile = getAllTags(fileCache); // Returns tags with '#'
+				const tagsInFile = getAllTags(fileCache); 
 				tagsInFile?.forEach(tag => {
-					collectedTags.add(tag.substring(1)); // Store without '#'
+					collectedTags.add(tag.substring(1)); 
 				});
 			}
 		});
@@ -744,7 +756,6 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
-		// Invalidate caches on display, as vault contents might have changed
 		this.allFolderPathsCache = null;
 		this.allTagsCache = null;
 		this.allMarkdownFilePathsCache = null;
@@ -756,31 +767,26 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 		containerEl.createEl('h3', { text: 'Rules' });
 		const rulesContainer = containerEl.createDiv('rules-container virtual-footer-rules-container');
 
-		// Ensure settings.rules array exists and has at least one rule
 		if (!this.plugin.settings.rules) {
 			this.plugin.settings.rules = [];
 		}
 		if (this.plugin.settings.rules.length === 0) {
-			// Add a default rule if none exist, deep cloning the default
 			this.plugin.settings.rules.push(JSON.parse(JSON.stringify(DEFAULT_SETTINGS.rules[0])));
 		}
 
-		// Render controls for each rule
 		this.plugin.settings.rules.forEach((rule, index) => {
 			this.renderRuleControls(rule, index, rulesContainer);
 		});
 
-		// Button to add a new rule
 		new Setting(containerEl)
 			.addButton(button => button
 				.setButtonText('Add new rule')
-				.setCta() // Call To Action style
+				.setCta() 
 				.setClass('virtual-footer-add-button')
 				.onClick(async () => {
-					// Add a new rule by deep cloning the default rule structure
 					this.plugin.settings.rules.push(JSON.parse(JSON.stringify(DEFAULT_SETTINGS.rules[0])));
 					await this.plugin.saveSettings();
-					this.display(); // Re-render the settings tab
+					this.display(); 
 				}));
 	}
 
@@ -794,7 +800,6 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 		const ruleDiv = containerEl.createDiv('rule-item virtual-footer-rule-item');
 		ruleDiv.createEl('h4', { text: `Rule ${index + 1}` });
 
-		// Setting for Rule Type (Folder/Tag)
 		new Setting(ruleDiv)
 			.setName('Rule type')
 			.setDesc('Apply this rule based on folder or tag.')
@@ -804,31 +809,52 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 				.setValue(rule.type)
 				.onChange(async (value: string) => {
 					rule.type = value as RuleType;
-					// Ensure properties are consistent with the new type
-					this.plugin.normalizeRule(rule); // Use public normalize method
+					this.plugin.normalizeRule(rule); 
 					await this.plugin.saveSettings();
-					this.display(); // Re-render to show relevant fields
+					this.display(); 
 				}));
 
-		// Conditional settings based on Rule Type
 		if (rule.type === RuleType.Folder) {
 			new Setting(ruleDiv)
 				.setName('Folder path')
-				.setDesc('Path for the rule. Use "" for all files, "/" for root folder, or "FolderName/" for specific folders (and subfolders).')
+				.setDesc('Path for the rule. Use "" for all files, "/" for root folder, or "FolderName/" for specific folders.')
 				.addText(text => {
 					text.setPlaceholder('e.g., Meetings/, /, or empty for all')
 						.setValue(rule.path || '')
 						.onChange(async (value) => {
 							rule.path = value;
+							// Normalizing here ensures recursive is set correctly if path becomes ""
+							this.plugin.normalizeRule(rule);
 							await this.plugin.saveSettings();
+							this.display(); // Re-render to update recursive toggle state
 						});
-					// Attach suggestion provider for folder paths
 					new MultiSuggest(text.inputEl, this.getAvailableFolderPaths(), (selectedPath) => {
 						rule.path = selectedPath;
-						text.setValue(selectedPath); // Update text field visually
+						this.plugin.normalizeRule(rule);
+						text.setValue(selectedPath); 
 						this.plugin.saveSettings();
+						this.display(); // Re-render
 					}, this.plugin.app);
 				});
+			
+			// Setting for recursive matching (only for Folder type)
+			new Setting(ruleDiv)
+				.setName('Include subfolders (recursive)')
+				.setDesc('If enabled, rule applies to files in subfolders. For "all files" (empty path), this is always true. For root path ("/"), enabling applies to all vault files, disabling applies only to files directly in the root.')
+				.addToggle(toggle => {
+					// rule.recursive is guaranteed to be boolean by normalizeRule
+					toggle.setValue(rule.recursive!) 
+						.onChange(async (value) => {
+							rule.recursive = value;
+							await this.plugin.saveSettings();
+							// No need to redisplay for a toggle change unless other fields depend on it.
+						});
+					// If path is "", recursive is effectively always true and fixed by normalizeRule.
+					if (rule.path === "") {
+						toggle.setDisabled(true);
+					}
+				});
+
 		} else if (rule.type === RuleType.Tag) {
 			new Setting(ruleDiv)
 				.setName('Tag value')
@@ -837,35 +863,32 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 					text.setPlaceholder('e.g., important or project/alpha')
 						.setValue(rule.tag || '')
 						.onChange(async (value) => {
-							rule.tag = value.startsWith('#') ? value.substring(1) : value; // Remove '#' if present
+							rule.tag = value.startsWith('#') ? value.substring(1) : value; 
 							await this.plugin.saveSettings();
 						});
-					// Attach suggestion provider for tags
 					new MultiSuggest(text.inputEl, this.getAvailableTags(), (selectedTag) => {
 						const normalizedTag = selectedTag.startsWith('#') ? selectedTag.substring(1) : selectedTag;
 						rule.tag = normalizedTag;
-						text.setValue(normalizedTag); // Update text field visually
+						text.setValue(normalizedTag); 
 						this.plugin.saveSettings();
 					}, this.plugin.app);
 				});
 		}
 
-		// Setting for Content Source (Direct Text/Markdown File)
 		new Setting(ruleDiv)
 			.setName('Content source')
 			.setDesc('Where to get the content from.')
 			.addDropdown(dropdown => dropdown
 				.addOption(ContentSource.Text, 'Direct text')
 				.addOption(ContentSource.File, 'Markdown file')
-				.setValue(rule.contentSource || ContentSource.Text) // Default to Text if undefined
+				.setValue(rule.contentSource || ContentSource.Text) 
 				.onChange(async (value: string) => {
 					rule.contentSource = value as ContentSource;
-					this.plugin.normalizeRule(rule); // Ensure consistency
+					this.plugin.normalizeRule(rule); 
 					await this.plugin.saveSettings();
-					this.display(); // Re-render to show relevant fields
+					this.display(); 
 				}));
 
-		// Conditional settings based on Content Source
 		if (rule.contentSource === ContentSource.File) {
 			new Setting(ruleDiv)
 				.setName('Content file path')
@@ -877,14 +900,13 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 							rule.footerFilePath = value;
 							await this.plugin.saveSettings();
 						});
-					// Attach suggestion provider for Markdown file paths
 					new MultiSuggest(text.inputEl, this.getAvailableMarkdownFilePaths(), (selectedPath) => {
 						rule.footerFilePath = selectedPath;
-						text.setValue(selectedPath); // Update text field visually
+						text.setValue(selectedPath); 
 						this.plugin.saveSettings();
 					}, this.plugin.app);
 				});
-		} else { // ContentSource.Text
+		} else { 
 			new Setting(ruleDiv)
 				.setName('Content text')
 				.setDesc('Markdown text to display. This will be rendered.')
@@ -897,32 +919,29 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 					}));
 		}
 
-		// Setting for Render Location (Header/Footer)
 		new Setting(ruleDiv)
 			.setName('Render location')
 			.setDesc('Choose where this rule renders its content.')
 			.addDropdown(dropdown => dropdown
 				.addOption(RenderLocation.Footer, 'Footer')
 				.addOption(RenderLocation.Header, 'Header')
-				.setValue(rule.renderLocation || RenderLocation.Footer) // Default to Footer
+				.setValue(rule.renderLocation || RenderLocation.Footer) 
 				.onChange(async (value: string) => {
 					rule.renderLocation = value as RenderLocation;
 					await this.plugin.saveSettings();
 				}));
 
-		// Setting for Deleting the rule
 		new Setting(ruleDiv)
 			.addButton(button => button
 				.setButtonText('Delete rule')
-				.setWarning() // Style as a warning/destructive action
+				.setWarning() 
 				.setClass('virtual-footer-delete-button')
 				.onClick(async () => {
-					this.plugin.settings.rules.splice(index, 1); // Remove rule from array
+					this.plugin.settings.rules.splice(index, 1); 
 					await this.plugin.saveSettings();
-					this.display(); // Re-render the settings tab
+					this.display(); 
 				}));
 
-		// Visual separator between rules
 		ruleDiv.createEl('hr', { cls: 'virtual-footer-rule-divider' });
 	}
 }
