@@ -23,3 +23,37 @@
 .virtual-footer-add-button {
     margin: 1em;
 }
+
+.virtual-footer-rule-item h4 {
+    cursor: pointer;
+    user-select: none;
+    position: relative;
+    /* Space for the icon */
+    padding-left: 22px;
+    margin-bottom: 0.5em; 
+}
+.virtual-footer-rule-item h4::before {
+    /* Collapsed state: right-pointing triangle */
+    content: '▶';
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%) scale(0.9);
+    /* Adjust size as needed */
+    font-size: 1em;
+}
+.virtual-footer-rule-item:not(.is-collapsed) h4::before {
+    content: '▼';
+}
+.virtual-footer-rule-item.is-collapsed .virtual-footer-rule-content {
+    display: none;
+}
+.virtual-footer-rule-content {
+    /* Indent content to align with text after icon */
+    padding-left: 22px;
+    /* Optional visual cue */
+    /* border-left: 1px solid var(--background-modifier-border); */
+    /* Align border with icon center */
+    /* margin-left: 2px; */
+    padding-bottom: 10px;
+}
