@@ -874,6 +874,8 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 	private allTagsCache: Set<string> | null = null;
 	private allMarkdownFilePathsCache: Set<string> | null = null;
 	private allPropertyNamesCache: Set<string> | null = null;
+	private ruleExpandedStates: boolean[] = [];
+
 
 	constructor(app: App, private plugin: VirtualFooterPlugin) {
 		super(app, plugin);
@@ -966,6 +968,15 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 		this.allMarkdownFilePathsCache = null;
 		this.allPropertyNamesCache = null;
 
+		// Synchronize ruleExpandedStates with the current number of rules
+		const numRules = this.plugin.settings.rules.length;
+		while (this.ruleExpandedStates.length < numRules) {
+			this.ruleExpandedStates.push(false); // Default new rules to collapsed
+		}
+		if (this.ruleExpandedStates.length > numRules) {
+			this.ruleExpandedStates.length = numRules; // Truncate if rules were removed
+		}
+
 		// --- Plugin Header ---
 		containerEl.createEl('h2', { text: 'Virtual Content Settings' });
 		containerEl.createEl('p', { text: 'Define rules to dynamically add content to the header or footer of notes based on their folder, tags, or properties.' });
@@ -981,6 +992,10 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 			const newRule = JSON.parse(JSON.stringify(DEFAULT_SETTINGS.rules[0]));
 			this.plugin.normalizeRule(newRule); // Normalize the new default rule
 			this.plugin.settings.rules.push(newRule);
+			// Ensure ruleExpandedStates is updated for the new rule
+			if (this.ruleExpandedStates.length === 0) {
+				this.ruleExpandedStates.push(false);
+			}
 		}
 
 		// Render controls for each rule
@@ -998,6 +1013,7 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 					const newRule = JSON.parse(JSON.stringify(DEFAULT_SETTINGS.rules[0]));
 					this.plugin.normalizeRule(newRule);
 					this.plugin.settings.rules.push(newRule);
+					this.ruleExpandedStates.push(false); // New rule is initially collapsed
 					await this.plugin.saveSettings();
 					this.display(); // Re-render to show the new rule and update indices
 				}));
@@ -1011,21 +1027,24 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 	 */
 	private renderRuleControls(rule: Rule, index: number, containerEl: HTMLElement): void {
 		const ruleDiv = containerEl.createDiv('rule-item virtual-footer-rule-item');
-		// Rules are collapsed by default for a cleaner initial view
-		ruleDiv.addClass('is-collapsed');
+		
+		// Apply stored expansion state or default to collapsed
+		if (!this.ruleExpandedStates[index]) {
+			ruleDiv.addClass('is-collapsed');
+		}
 
 		const ruleNameDisplay = (rule.name && rule.name.trim() !== '') ? rule.name : 'Unnamed Rule';
 		const ruleHeadingText = `Rule ${index + 1}: ${ruleNameDisplay}`;
 		const ruleHeading = ruleDiv.createEl('h4', { text: ruleHeadingText });
-		// Add a class for styling the clickable header (e.g., with collapse/expand icons via CSS)
 		ruleHeading.addClass('virtual-footer-rule-heading');
 
 
 		const ruleContentContainer = ruleDiv.createDiv('virtual-footer-rule-content');
 
-		// Toggle collapse/expand on heading click
+		// Toggle collapse/expand on heading click and update state
 		ruleHeading.addEventListener('click', () => {
-			ruleDiv.toggleClass('is-collapsed', !ruleDiv.classList.contains('is-collapsed'));
+			const isNowExpanded = !ruleDiv.classList.toggle('is-collapsed');
+			this.ruleExpandedStates[index] = isNowExpanded;
 		});
 
 		// --- Rule Name Setting ---
@@ -1235,9 +1254,9 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 				.onClick(async () => {
 					// Confirmation could be added here if desired
 					this.plugin.settings.rules.splice(index, 1); // Remove rule from array
+					this.ruleExpandedStates.splice(index, 1); // Remove corresponding state
 					await this.plugin.saveSettings();
 					this.display(); // Re-render to reflect deletion and update indices
 				}));
 	}
 }
-
