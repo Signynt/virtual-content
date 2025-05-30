@@ -1,13 +1,24 @@
 # Virtual Footer
 
-Set rules to add markdown text to the bottom (or top) of each file in a folder, or based on a tag present in them. This text get's rendered normally, including dataview blocks.
+Set rules to add markdown text to the bottom or top of files based on rules. This text get's rendered normally, including dataview blocks.
 Your notes don't get modified or changed, the given markdown text is simply rendered "virtually".
+Rules can include folders, tags or properties.
+The content to be included can be entered directly in the plugin settings, or come from a file in your vault.
 
-This is especially useful if you have many files with the same dataview block. Instead of pasting the datview codeblock into every note, you can simply add it with this plugin.
-This prevents unecessary bloat, while also letting you easily change the code for all files at the same time.
+This is especially useful if you have many files with the same dataview block. Instead of pasting the dataview codeblock into every note, you can simply add it with this plugin.
+This prevents unecessary file bloat, while also letting you easily change the code for all files at the same time.
+
+## Features
+- Works with Dataview, Datacore and native Obisidan Bases
+- Lets you define rules using folderes, tags and properties
+	- Rules can be set to include or exclude subfolders and subtags (recursive matching)
+- Lets you select wether the "virtual content" gets added as a footer (end of file) or a header (below properties)
+- Allows for "virtual content" to be defined in the plugin settings, or in a markdown file
+- Rules can be enabled or disabled from the plugin settings
 
 ## Example use cases
 
+### Universally defined dataview for showing authors works
 I have a folder called "Authors" which contains a note on each author of media I've read/watched. I want to see what media the Author has made when I open the note, so I use the following dataview query to query that info from my media notes:
 
 ``````md
@@ -24,10 +35,81 @@ SORT file.link DESC
 Instead of having to add this to each file, I can simply add a rule to the folder "Authors" which contains the above text, and it will be automatically shown in each file.
 I can do this with as many folders as I like.
 
-![image](https://github.com/user-attachments/assets/b8f3cc76-ae57-478f-898b-b54afc63ff07)
+![virtual-footer-screenshot](https://github.com/user-attachments/assets/1251ece2-ad92-4393-9284-6c51d3567b6b)
 
 ![image](https://github.com/user-attachments/assets/1caa8991-eec1-42a2-96da-ad5526acbc36)
 
+### Customizable backlinks
+Some users use Virtual Footer to sort their backlinks based on folder or tag.
+
+### Displaying tags used in a file
+Other users use Virtual Footer at the top of a file to show tags used in the body of their notes. Check out [this issue](https://github.com/Signynt/virtual-footer/issues/5#issuecomment-2919648582) for examples!
+
+### Displaying related notes in your daily note
+I use this dataviewjs to display notes which were created, modified on that day or reference my daily note.
+
+![image](https://github.com/user-attachments/assets/cbd45a04-7ace-498b-bdd4-c025b8b71315)
+
+`````md
+```dataviewjs
+const currentDate = dv.current().file.name; // Get the current journal note's date (YYYY-MM-DD)
+
+// Helper function to extract the date part (YYYY-MM-DD) from a datetime string as a plain string
+const extractDate = (datetime) => {
+    if (!datetime) return "No date";
+    if (typeof datetime === "string") {
+        return datetime.split("T")[0]; // Split at "T" to extract the date
+    }
+    return "Invalid format"; // Fallback if not a string
+};
+
+const thoughts = dv.pages('"Thoughts"')
+    .where(p => {
+        const createdDate = p.created ? extractDate(String(p.created)) : null;
+        const modifiedDate = p.modified ? extractDate(String(p.modified)) : null;
+        return createdDate === currentDate || modifiedDate === currentDate;
+    });
+
+const wiki = dv.pages('"Wiki"')
+    .where(p => {
+        const createdDate = p.created ? extractDate(String(p.created)) : null;
+        const modifiedDate = p.modified ? extractDate(String(p.modified)) : null;
+        return createdDate === currentDate || modifiedDate === currentDate;
+    });
+
+const literatureNotes = dv.pages('"References/Literature"')
+    .where(p => {
+        const createdDate = p.created ? extractDate(String(p.created)) : null;
+        const modifiedDate = p.modified ? extractDate(String(p.modified)) : null;
+        return createdDate === currentDate || modifiedDate === currentDate;
+    });
+
+const mediaThoughts = dv.pages('"References/Media"')
+    .where(p => {
+        // Check only for files that explicitly link to the daily note
+        const linksToCurrent = p.file.outlinks && p.file.outlinks.some(link => link.path === dv.current().file.path);
+        return linksToCurrent;
+    });
+
+const mediaWatched = dv.pages('"References/Media"')
+    .where(p => {
+        const startedDate = p.started ? extractDate(String(p.started)) : null;
+        const finishedDate = p.finished ? extractDate(String(p.finished)) : null;
+        return startedDate === currentDate || finishedDate === currentDate;
+    });
+
+const relatedFiles = [...thoughts, ...mediaThoughts, ...mediaWatched, ...wiki, ...literatureNotes];
+
+if (relatedFiles.length > 0) {
+    dv.el("div", 
+        `> [!related]+\n` + 
+        relatedFiles.map(p => `> - ${p.file.link}`).join("\n")
+    );
+} else {
+    dv.el("div", `> [!related]+\n> - No related files found.`);
+}
+```
+`````
 
 ## Limitations
 
