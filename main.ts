@@ -185,6 +185,8 @@ export class MultiSuggest extends AbstractInputSuggest<string> {
 
 export default class VirtualFooterPlugin extends Plugin {
 	settings: VirtualFooterSettings;
+	private pendingPreviewInjections: WeakMap<MarkdownView, { headerDiv?: HTMLElementWithComponent, footerDiv?: HTMLElementWithComponent }> = new WeakMap();
+	private previewObservers: WeakMap<MarkdownView, MutationObserver> = new WeakMap();
 
 	/**
 	 * Called when the plugin is loaded.
@@ -221,22 +223,30 @@ export default class VirtualFooterPlugin extends Plugin {
 	 * Cleans up all injected content and styles from all views.
 	 */
 	async onunload() {
-		// Attempt to clean up content from all known markdown views
-		this.clearAllViewsDynamicContent();
+		this.clearAllViewsDynamicContent(); // This will also handle observers and pending injections
 
 		// Fallback: Perform a global search and remove any remaining dynamic content elements.
-		// This acts as a safety net for elements not caught by view-specific cleanup.
 		document.querySelectorAll(`.${CSS_DYNAMIC_CONTENT_ELEMENT}`).forEach(el => {
 			const componentHolder = el as HTMLElementWithComponent;
 			if (componentHolder.component) {
-				componentHolder.component.unload(); // Unload associated component
+				componentHolder.component.unload(); 
 			}
-			el.remove(); // Remove the DOM element
+			el.remove(); 
 		});
 
-		// Fallback: Remove global CSS classes that might have been applied.
+		// Fallback: Remove global CSS classes
 		document.querySelectorAll(`.${CSS_VIRTUAL_FOOTER_CM_PADDING}`).forEach(el => el.classList.remove(CSS_VIRTUAL_FOOTER_CM_PADDING));
 		document.querySelectorAll(`.${CSS_VIRTUAL_FOOTER_REMOVE_FLEX}`).forEach(el => el.classList.remove(CSS_VIRTUAL_FOOTER_REMOVE_FLEX));
+
+		// Ensure all observers and pending items are cleared if any were missed
+		this.previewObservers.forEach(observer => observer.disconnect());
+		this.previewObservers = new WeakMap();
+
+		this.pendingPreviewInjections.forEach(pending => {
+			pending.headerDiv?.component?.unload();
+			pending.footerDiv?.component?.unload();
+		});
+		this.pendingPreviewInjections = new WeakMap();
 	}
 
 	/**
@@ -256,24 +266,22 @@ export default class VirtualFooterPlugin extends Plugin {
 	 */
 	private async _processView(view: MarkdownView | null): Promise<void> {
 		if (!view || !view.file) {
-			// If no valid view or file, ensure any existing dynamic content in other views is cleared (e.g., if settings changed)
 			return;
 		}
 
-		// Always remove existing dynamic content from this specific view before re-processing
-		await this.removeDynamicContentFromView(view);
+		await this.removeDynamicContentFromView(view); // Clears existing content, observers, and pending injections for this view
 
 		const applicableRulesWithContent = await this._getApplicableRulesAndContent(view.file.path);
 
 		if (applicableRulesWithContent.length === 0) {
-			return; // No rules apply to this file, and cleanup is already done.
+			return; 
 		}
 
 		const viewState = view.getState();
 		let combinedHeaderText = "";
 		let combinedFooterText = "";
 		let hasFooterRule = false;
-		const contentSeparator = "\n\n"; // Markdown paragraph break
+		const contentSeparator = "\n\n"; 
 
 		for (const { rule, contentText } of applicableRulesWithContent) {
 			if (!contentText || contentText.trim() === "") continue;
@@ -286,57 +294,77 @@ export default class VirtualFooterPlugin extends Plugin {
 			}
 		}
 
-		// Apply specific Live Preview footer styles if footer content exists and view is in Live Preview mode.
 		if (viewState.mode === 'source' && !viewState.source && hasFooterRule) {
 			this.applyLivePreviewFooterStyles(view);
 		}
+		
+		let pendingHeaderDiv: HTMLElementWithComponent | null = null;
+		let pendingFooterDiv: HTMLElementWithComponent | null = null;
 
-		// Render and inject content groups if in Reading mode or Live Preview mode.
-		// 'source' && !'source' means Live Preview. 'preview' means Reading mode.
 		if (viewState.mode === 'preview' || (viewState.mode === 'source' && !viewState.source)) {
 			if (combinedHeaderText.trim()) {
-				await this.renderAndInjectGroupedContent(view, combinedHeaderText, RenderLocation.Header);
+				const result = await this.renderAndInjectGroupedContent(view, combinedHeaderText, RenderLocation.Header);
+				if (result && viewState.mode === 'preview') { // Defer only for preview mode
+					pendingHeaderDiv = result;
+				}
 			}
 			if (combinedFooterText.trim()) {
-				await this.renderAndInjectGroupedContent(view, combinedFooterText, RenderLocation.Footer);
+				const result = await this.renderAndInjectGroupedContent(view, combinedFooterText, RenderLocation.Footer);
+				if (result && viewState.mode === 'preview') { // Defer only for preview mode
+					pendingFooterDiv = result;
+				}
 			}
+		}
+
+		if (pendingHeaderDiv || pendingFooterDiv) {
+			let pending = this.pendingPreviewInjections.get(view);
+			if (!pending) {
+				pending = {};
+				this.pendingPreviewInjections.set(view, pending);
+			}
+			if (pendingHeaderDiv) pending.headerDiv = pendingHeaderDiv;
+			if (pendingFooterDiv) pending.footerDiv = pendingFooterDiv;
+			this.ensurePreviewObserver(view);
 		}
 	}
 
 	/**
 	 * Renders combined Markdown content into a group element and injects it into the view.
+	 * If in preview mode and the target is not found, returns the groupDiv for deferred injection.
 	 * @param view The MarkdownView to inject content into.
 	 * @param combinedContentText The combined Markdown text to render.
 	 * @param renderLocation Specifies whether to render in the Header or Footer.
+	 * @returns A Promise resolving to the HTMLElementWithComponent if injection is deferred (preview mode only), or null otherwise.
 	 */
-	private async renderAndInjectGroupedContent(view: MarkdownView, combinedContentText: string, renderLocation: RenderLocation): Promise<void> {
+	private async renderAndInjectGroupedContent(
+		view: MarkdownView, 
+		combinedContentText: string, 
+		renderLocation: RenderLocation
+	): Promise<HTMLElementWithComponent | null> {
 		if (!combinedContentText || combinedContentText.trim() === "") {
-			return;
+			return null;
 		}
 
 		const isRenderInHeader = renderLocation === RenderLocation.Header;
-		const sourcePath = view.file?.path || ''; // Source path for Markdown rendering context
+		const sourcePath = view.file?.path || ''; 
 
-		// Create the main container div for the dynamic content
 		const groupDiv = document.createElement('div') as HTMLElementWithComponent;
-		groupDiv.className = CSS_DYNAMIC_CONTENT_ELEMENT; // General class for identification
+		groupDiv.className = CSS_DYNAMIC_CONTENT_ELEMENT; 
 		groupDiv.classList.add(
 			isRenderInHeader ? CSS_HEADER_GROUP_ELEMENT : CSS_FOOTER_GROUP_ELEMENT,
 			isRenderInHeader ? CSS_HEADER_RENDERED_CONTENT : CSS_FOOTER_RENDERED_CONTENT
 		);
 
-		// Create and load an Obsidian Component to manage the lifecycle of the rendered content
 		const component = new Component();
 		component.load();
-		groupDiv.component = component; // Associate component with the element
+		groupDiv.component = component; 
 
-		// Render the Markdown content into the groupDiv
 		await MarkdownRenderer.render(this.app, combinedContentText, groupDiv, sourcePath, component);
 
 		let injectionSuccessful = false;
 		const viewState = view.getState();
 
-		if (viewState.mode === 'preview') { // Reading mode
+		if (viewState.mode === 'preview') { 
 			const previewContentParent = view.previewMode.containerEl;
 			const targetParent = previewContentParent.querySelector<HTMLElement>(
 				isRenderInHeader ? SELECTOR_PREVIEW_HEADER_AREA : SELECTOR_PREVIEW_FOOTER_AREA
@@ -345,7 +373,7 @@ export default class VirtualFooterPlugin extends Plugin {
 				targetParent.appendChild(groupDiv);
 				injectionSuccessful = true;
 			}
-		} else if (viewState.mode === 'source' && !viewState.source) { // Live Preview editor mode
+		} else if (viewState.mode === 'source' && !viewState.source) { 
 			if (isRenderInHeader) {
 				const cmContentContainer = view.containerEl.querySelector<HTMLElement>(SELECTOR_LIVE_PREVIEW_CONTENT_CONTAINER);
 				if (cmContentContainer?.parentElement) {
@@ -363,11 +391,92 @@ export default class VirtualFooterPlugin extends Plugin {
 
 		if (injectionSuccessful) {
 			this.attachInternalLinkHandlers(groupDiv, sourcePath, component);
+			return null; // Successfully injected
 		} else {
-			component.unload();
-			console.warn(`VirtualFooter: Failed to find injection point for dynamic content group (${renderLocation}). View mode: ${viewState.mode}.`);
+			if (viewState.mode === 'preview') {
+				// For preview mode, if injection point not found, return the div for deferred injection.
+				// The component is kept loaded.
+				console.log(`VirtualFooter: Deferring injection for ${renderLocation} in preview mode. Target not found yet.`);
+				return groupDiv;
+			} else {
+				// For other modes (e.g., Live Preview), if it fails, it's an unexpected issue.
+				component.unload(); // Unload component as it won't be used.
+				console.warn(`VirtualFooter: Failed to find injection point for dynamic content group (${renderLocation}). View mode: ${viewState.mode}.`);
+				return null; // Indicate failure, nothing to defer.
+			}
 		}
 	}
+
+	/**
+	 * Ensures a MutationObserver is set up for the given view's preview mode to handle deferred injections.
+	 * @param view The MarkdownView to observe.
+	 */
+	private ensurePreviewObserver(view: MarkdownView): void {
+		if (this.previewObservers.has(view) || !view.file || !view.previewMode?.containerEl) {
+			return;
+		}
+
+		const observer = new MutationObserver((mutations) => {
+			if (!view.file) { // View or file became invalid
+				observer.disconnect();
+				this.previewObservers.delete(view);
+				const pendingStale = this.pendingPreviewInjections.get(view);
+				if (pendingStale) {
+					pendingStale.headerDiv?.component?.unload();
+					pendingStale.footerDiv?.component?.unload();
+					this.pendingPreviewInjections.delete(view);
+				}
+				return;
+			}
+
+			const pending = this.pendingPreviewInjections.get(view);
+			if (!pending || (!pending.headerDiv && !pending.footerDiv)) {
+				observer.disconnect();
+				this.previewObservers.delete(view);
+				if (pending) this.pendingPreviewInjections.delete(view); // Clean up empty pending object
+				return;
+			}
+
+			let allResolved = true;
+			const sourcePath = view.file.path; // Safe due to check above
+
+			if (pending.headerDiv) {
+				const headerTargetParent = view.previewMode.containerEl.querySelector<HTMLElement>(SELECTOR_PREVIEW_HEADER_AREA);
+				if (headerTargetParent) {
+					headerTargetParent.appendChild(pending.headerDiv);
+					if (pending.headerDiv.component) {
+						this.attachInternalLinkHandlers(pending.headerDiv, sourcePath, pending.headerDiv.component);
+					}
+					delete pending.headerDiv;
+				} else {
+					allResolved = false;
+				}
+			}
+
+			if (pending.footerDiv) {
+				const footerTargetParent = view.previewMode.containerEl.querySelector<HTMLElement>(SELECTOR_PREVIEW_FOOTER_AREA);
+				if (footerTargetParent) {
+					footerTargetParent.appendChild(pending.footerDiv);
+					 if (pending.footerDiv.component) {
+						this.attachInternalLinkHandlers(pending.footerDiv, sourcePath, pending.footerDiv.component);
+					}
+					delete pending.footerDiv;
+				} else {
+					allResolved = false;
+				}
+			}
+
+			if (allResolved) {
+				observer.disconnect();
+				this.previewObservers.delete(view);
+				this.pendingPreviewInjections.delete(view); // All items resolved, remove pending entry
+			}
+		});
+
+		observer.observe(view.previewMode.containerEl, { childList: true, subtree: true });
+		this.previewObservers.set(view, observer);
+	}
+
 
 	/**
 	 * Applies specific CSS classes to improve layout for Live Preview footer rendering.
@@ -414,11 +523,34 @@ export default class VirtualFooterPlugin extends Plugin {
 
 	/**
 	 * Removes all dynamic content (styles and DOM elements) from a specific Markdown view.
+	 * Also cleans up any pending injections or observers for this view.
 	 * @param view The MarkdownView to clean.
 	 */
 	private async removeDynamicContentFromView(view: MarkdownView): Promise<void> {
 		this.removeLivePreviewFooterStyles(view);
 		await this.removeInjectedContentDOM(view.containerEl);
+
+		// Cleanup for pending preview injections and observers
+		const observer = this.previewObservers.get(view);
+		if (observer) {
+			observer.disconnect();
+			this.previewObservers.delete(view);
+		}
+
+		const pending = this.pendingPreviewInjections.get(view);
+		if (pending) {
+			if (pending.headerDiv?.component) {
+				pending.headerDiv.component.unload();
+			}
+			// pending.headerDiv?.remove(); // Not strictly necessary if component unloaded and no longer referenced
+
+			if (pending.footerDiv?.component) {
+				pending.footerDiv.component.unload();
+			}
+			// pending.footerDiv?.remove(); // Not strictly necessary
+
+			this.pendingPreviewInjections.delete(view);
+		}
 	}
 
 	/**
@@ -910,14 +1042,14 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 							rule.path = value;
 							this.plugin.normalizeRule(rule);
 							await this.plugin.saveSettings();
-							this.display();
+							this.display(); // Refresh display to update recursive toggle state if path becomes ""
 						});
 					new MultiSuggest(text.inputEl, this.getAvailableFolderPaths(), (selectedPath) => {
 						rule.path = selectedPath;
 						this.plugin.normalizeRule(rule);
 						text.setValue(selectedPath);
 						this.plugin.saveSettings();
-						this.display();
+						this.display(); // Refresh display
 					}, this.plugin.app);
 				});
 
@@ -925,13 +1057,13 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 				.setName('Include subfolders (recursive)')
 				.setDesc('If enabled, rule applies to files in subfolders. For "all files" (empty path), this is always true. For root path ("/"), enabling applies to all vault files, disabling applies only to files directly in the root.')
 				.addToggle(toggle => {
-					toggle.setValue(rule.recursive!)
+					toggle.setValue(rule.recursive!) // recursive is guaranteed by normalizeRule
 						.onChange(async (value) => {
 							rule.recursive = value;
 							await this.plugin.saveSettings();
 						});
-					if (rule.path === "") {
-						toggle.setDisabled(true);
+					if (rule.path === "") { // Path for "all files"
+						toggle.setDisabled(true); // Recursive is implicitly true and non-configurable
 					}
 				});
 
@@ -954,19 +1086,17 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 					}, this.plugin.app);
 				});
 
-			// Setting for includeSubtags (only for Tag type)
 			new Setting(ruleDiv)
 				.setName('Include subtags')
 				.setDesc("If enabled, a rule for 'tag' will also apply to 'tag/subtag1', 'tag/subtag2/subtag3', etc. If disabled, it only applies to the exact tag.")
 				.addToggle(toggle => {
-					// rule.includeSubtags is guaranteed to be boolean by normalizeRule
-					toggle.setValue(rule.includeSubtags!)
+					toggle.setValue(rule.includeSubtags!) // includeSubtags is guaranteed by normalizeRule
 						.onChange(async (value) => {
 							rule.includeSubtags = value;
 							await this.plugin.saveSettings();
 						});
 				});
-		} else if (rule.type === RuleType.Property) { // Added section for Property
+		} else if (rule.type === RuleType.Property) { 
 			new Setting(ruleDiv)
 				.setName('Property name')
 				.setDesc('The name of the Obsidian property (frontmatter key) to match.')
