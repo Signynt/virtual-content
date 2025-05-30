@@ -1,12 +1,8 @@
 # Virtual Footer
 
-Set rules to add markdown text to the bottom or top of files based on rules. This text get's rendered normally, including dataview blocks.
-Your notes don't get modified or changed, the given markdown text is simply rendered "virtually".
-Rules can include folders, tags or properties.
-The content to be included can be entered directly in the plugin settings, or come from a file in your vault.
+Set rules to add markdown text to the bottom or top of files based on rules. This text get's rendered normally, including dataview blocks or Obsidian Bases. Your notes don't get modified or changed, the given markdown text is simply rendered "virtually". Rules can be applied to folders, tags or properties. The content to be included can be entered directly in the plugin settings, or come from a file in your vault.
 
-This is especially useful if you have many files with the same dataview block. Instead of pasting the dataview codeblock into every note, you can simply add it with this plugin.
-This prevents unecessary file bloat, while also letting you easily change the code for all files at the same time.
+This is especially useful if you have many files with the same dataview block. Instead of pasting the dataview codeblock into every note, you can simply add it with this plugin. This prevents unecessary file bloat, while also letting you easily change the code for all files at the same time.
 
 ## Features
 - Works with Dataview, Datacore and native Obisidan Bases
