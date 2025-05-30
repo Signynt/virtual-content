@@ -1,7 +1,7 @@
 {
 	"id": "virtual-footer",
 	"name": "Virtual Footer",
-	"version": "1.0.6",
+	"version": "1.0.7",
 	"minAppVersion": "0.15.0",
 	"description": "Display markdown text (including dataview queries) at the bottom of all notes in a folder, without modifying them.",
 	"author": "Signynt",
