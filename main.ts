@@ -1002,7 +1002,7 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 					const newRule = JSON.parse(JSON.stringify(DEFAULT_SETTINGS.rules[0]));
 					this.plugin.normalizeRule(newRule);
 					this.plugin.settings.rules.push(newRule);
-					this.ruleExpandedStates.push(false); // New rule is initially collapsed
+					this.ruleExpandedStates.push(true); // New rule is initially expanded
 					await this.plugin.saveSettings();
 					this.display(); // Re-render to show the new rule and update indices
 				}));
@@ -1233,19 +1233,67 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 					rule.renderLocation = value as RenderLocation;
 					await this.plugin.saveSettings();
 				}));
+		
+		// --- Rule Actions: Reorder and Delete ---
+		const ruleActionsSetting = new Setting(ruleContentContainer)
+			.setClass('virtual-footer-rule-actions');
 
-		// --- Delete Rule Button ---
-		new Setting(ruleContentContainer)
-			.addButton(button => button
-				.setButtonText('Delete rule')
-				.setWarning() // Style as a warning/destructive action
-				.setClass('virtual-footer-delete-button')
-				.onClick(async () => {
-					// Confirmation could be added here if desired
-					this.plugin.settings.rules.splice(index, 1); // Remove rule from array
-					this.ruleExpandedStates.splice(index, 1); // Remove corresponding state
+		// Move Up Button
+		ruleActionsSetting.addButton(button => button
+			.setIcon('arrow-up')
+			.setTooltip('Move rule up')
+			.setClass('virtual-footer-move-button')
+			.setDisabled(index === 0)
+			.onClick(async () => {
+				if (index > 0) {
+					const rules = this.plugin.settings.rules;
+					const ruleToMove = rules.splice(index, 1)[0];
+					rules.splice(index - 1, 0, ruleToMove);
+
+					const expandedStateToMove = this.ruleExpandedStates.splice(index, 1)[0];
+					this.ruleExpandedStates.splice(index - 1, 0, expandedStateToMove);
+					
 					await this.plugin.saveSettings();
-					this.display(); // Re-render to reflect deletion and update indices
-				}));
+					this.display();
+				}
+			}));
+
+		// Move Down Button
+		ruleActionsSetting.addButton(button => button
+			.setIcon('arrow-down')
+			.setTooltip('Move rule down')
+			.setClass('virtual-footer-move-button')
+			.setDisabled(index === this.plugin.settings.rules.length - 1)
+			.onClick(async () => {
+				if (index < this.plugin.settings.rules.length - 1) {
+					const rules = this.plugin.settings.rules;
+					const ruleToMove = rules.splice(index, 1)[0];
+					rules.splice(index + 1, 0, ruleToMove);
+
+					const expandedStateToMove = this.ruleExpandedStates.splice(index, 1)[0];
+					this.ruleExpandedStates.splice(index + 1, 0, expandedStateToMove);
+
+					await this.plugin.saveSettings();
+					this.display();
+				}
+			}));
+		
+		// Spacer to push delete button to the right
+		ruleActionsSetting.controlEl.createDiv({ cls: 'virtual-footer-actions-spacer' });
+
+
+		// Delete Rule Button
+		ruleActionsSetting.addButton(button => button
+			.setButtonText('Delete rule')
+			.setWarning() // Style as a warning/destructive action
+			.setClass('virtual-footer-delete-button')
+			.onClick(async () => {
+				// Confirmation could be added here if desired
+				this.plugin.settings.rules.splice(index, 1); // Remove rule from array
+				this.ruleExpandedStates.splice(index, 1); // Remove corresponding state
+				await this.plugin.saveSettings();
+				this.display(); // Re-render to reflect deletion and update indices
+			}));
 	}
 }
+
