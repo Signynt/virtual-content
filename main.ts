@@ -208,17 +208,6 @@ export default class VirtualFooterPlugin extends Plugin {
 		this.registerEvent(
 			this.app.workspace.on('layout-change', guardedHandleActiveViewChange)
 		);
-		this.registerEvent(
-			this.app.metadataCache.on('changed', (file) => {
-				if (this.initialLayoutReadyProcessed) {
-					// If the currently active file's metadata changes, refresh the view
-					const activeFile = this.app.workspace.getActiveFile();
-					if (activeFile && activeFile.path === file.path) {
-						this.handleActiveViewChange();
-					}
-				}
-			})
-		);
 
 		// Initial processing for any currently active view, once layout is ready
 		this.app.workspace.onLayoutReady(() => {
