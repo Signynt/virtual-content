@@ -74,6 +74,8 @@ interface Rule {
  */
 interface VirtualFooterSettings {
 	rules: Rule[];
+	/** Whether to refresh the view on file open. Defaults to false. */
+	refreshOnFileOpen?: boolean;
 }
 
 /**
@@ -99,6 +101,7 @@ const DEFAULT_SETTINGS: VirtualFooterSettings = {
 		footerText: '', // Default content is empty
 		renderLocation: RenderLocation.Footer,
 	}],
+	refreshOnFileOpen: false, // Default to false
 };
 
 // CSS Classes for styling and identifying plugin-generated elements
@@ -195,24 +198,33 @@ export default class VirtualFooterPlugin extends Plugin {
 		await this.loadSettings();
 		this.addSettingTab(new VirtualFooterSettingTab(this.app, this));
 
-		const guardedHandleActiveViewChange = () => {
+		// Define event handlers
+		const handleFileOpenEvent = () => {
+			// Only trigger if the setting is enabled and initial layout is ready
+			if (this.settings.refreshOnFileOpen && this.initialLayoutReadyProcessed) {
+				this.handleActiveViewChange();
+			}
+		};
+
+		const handleLayoutChangeEvent = () => {
+			// Always trigger on layout change if initial layout is ready
 			if (this.initialLayoutReadyProcessed) {
 				this.handleActiveViewChange();
 			}
 		};
 
-		// Register event listeners to update content on view changes or file modifications
+		// Register event listeners
 		this.registerEvent(
-			this.app.workspace.on('file-open', guardedHandleActiveViewChange)
+			this.app.workspace.on('file-open', handleFileOpenEvent)
 		);
 		this.registerEvent(
-			this.app.workspace.on('layout-change', guardedHandleActiveViewChange)
+			this.app.workspace.on('layout-change', handleLayoutChangeEvent)
 		);
 
 		// Initial processing for any currently active view, once layout is ready
 		this.app.workspace.onLayoutReady(() => {
 			if (!this.initialLayoutReadyProcessed) {
-				this.handleActiveViewChange();
+				this.handleActiveViewChange(); // Process the initially open view
 				this.initialLayoutReadyProcessed = true;
 			}
 		});
@@ -721,6 +733,12 @@ export default class VirtualFooterPlugin extends Plugin {
 					this._migrateRule(loadedRule, oldGlobalRenderLocation)
 				);
 			}
+			// Load the new refreshOnFileOpen setting if it exists in loadedData
+			if (typeof loadedData.refreshOnFileOpen === 'boolean') {
+				this.settings.refreshOnFileOpen = loadedData.refreshOnFileOpen;
+			}
+			// If loadedData.refreshOnFileOpen is undefined, this.settings.refreshOnFileOpen
+			// will retain the value from DEFAULT_SETTINGS due to the initial deep copy.
 		}
 
 		// Ensure there's at least one rule, and all rules are normalized
@@ -731,6 +749,10 @@ export default class VirtualFooterPlugin extends Plugin {
 		} else {
 			// Normalize all existing rules
 			this.settings.rules.forEach(rule => this.normalizeRule(rule));
+		}
+		// Ensure refreshOnFileOpen is definitely a boolean (it should be by now)
+		if (typeof this.settings.refreshOnFileOpen !== 'boolean') {
+			this.settings.refreshOnFileOpen = DEFAULT_SETTINGS.refreshOnFileOpen!;
 		}
 	}
 
@@ -951,6 +973,24 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty(); // Clear previous content
 
+		// --- Plugin Header ---
+		containerEl.createEl('h2', { text: 'Virtual Content Settings' });
+		containerEl.createEl('p', { text: 'Define rules to dynamically add content to the header or footer of notes based on their folder, tags, or properties.' });
+
+		// --- General Settings Section ---
+		new Setting(containerEl)
+			.setName('Refresh on focus change')
+			.setDesc('If enabled, virtual content will refresh when switching files. This may cause a slight flicker but is useful if you frequently change the text of virtual content and need immediate updates. If disabled the virtual content will be updated on file open and view change (editing/reading view). Disabled by default.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.refreshOnFileOpen!) // Value is ensured by loadSettings
+				.onChange(async (value) => {
+					this.plugin.settings.refreshOnFileOpen = value;
+					await this.plugin.saveSettings();
+				}));
+		
+		containerEl.createEl('h3', { text: 'Rules' });
+
+
 		// Invalidate caches to ensure fresh suggestions each time the tab is displayed
 		this.allFolderPathsCache = null;
 		this.allTagsCache = null;
@@ -966,10 +1006,6 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 			this.ruleExpandedStates.length = numRules; // Truncate if rules were removed
 		}
 
-		// --- Plugin Header ---
-		containerEl.createEl('h2', { text: 'Virtual Content Settings' });
-		containerEl.createEl('p', { text: 'Define rules to dynamically add content to the header or footer of notes based on their folder, tags, or properties.' });
-		containerEl.createEl('h3', { text: 'Rules' });
 
 		const rulesContainer = containerEl.createDiv('rules-container virtual-footer-rules-container');
 
@@ -1296,4 +1332,3 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 			}));
 	}
 }
-
