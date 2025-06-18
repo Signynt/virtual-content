@@ -186,7 +186,7 @@ export class MultiSuggest extends AbstractInputSuggest<string> {
 export default class VirtualFooterPlugin extends Plugin {
 	settings: VirtualFooterSettings;
 	/** Stores pending content injections for preview mode, awaiting DOM availability. */
-	private pendingPreviewInjections: WeakMap<MarkdownView, { headerDiv?: HTMLElementWithComponent, footerDiv?: HTMLElementWithComponent }> = new WeakMap();
+	private pendingPreviewInjections: WeakMap<MarkdownView, { headerDiv?: HTMLElementWithComponent, footerDiv?: HTMLElementWithComponent, filePath?: string }> = new WeakMap();
 	/** Manages MutationObservers for views in preview mode to detect when injection targets are ready. */
 	private previewObservers: WeakMap<MarkdownView, MutationObserver> = new WeakMap();
 	private initialLayoutReadyProcessed = false;
@@ -325,13 +325,11 @@ export default class VirtualFooterPlugin extends Plugin {
 
 		// If any content is pending for preview mode, set up an observer
 		if (pendingHeaderDiv || pendingFooterDiv) {
-			let pending = this.pendingPreviewInjections.get(view);
-			if (!pending) {
-				pending = {};
-				this.pendingPreviewInjections.set(view, pending);
-			}
-			if (pendingHeaderDiv) pending.headerDiv = pendingHeaderDiv;
-			if (pendingFooterDiv) pending.footerDiv = pendingFooterDiv;
+			this.pendingPreviewInjections.set(view, {
+				headerDiv: pendingHeaderDiv || undefined,
+				footerDiv: pendingFooterDiv || undefined,
+				filePath: view.file.path,
+			});
 			this.ensurePreviewObserver(view);
 		}
 	}
@@ -381,6 +379,13 @@ export default class VirtualFooterPlugin extends Plugin {
 				isRenderInHeader ? SELECTOR_PREVIEW_HEADER_AREA : SELECTOR_PREVIEW_FOOTER_AREA
 			);
 			if (targetParent) {
+				// Ensure idempotency: remove any existing content of this type before adding new
+				const classToRemove = isRenderInHeader ? CSS_HEADER_GROUP_ELEMENT : CSS_FOOTER_GROUP_ELEMENT;
+				targetParent.querySelectorAll(`.${classToRemove}`).forEach(el => {
+					const holder = el as HTMLElementWithComponent;
+					holder.component?.unload();
+					el.remove();
+				});
 				targetParent.appendChild(groupDiv);
 				injectionSuccessful = true;
 			}
@@ -388,12 +393,24 @@ export default class VirtualFooterPlugin extends Plugin {
 			if (isRenderInHeader) {
 				const cmContentContainer = view.containerEl.querySelector<HTMLElement>(SELECTOR_LIVE_PREVIEW_CONTENT_CONTAINER);
 				if (cmContentContainer?.parentElement) {
+					// Ensure idempotency: remove existing header
+					cmContentContainer.parentElement.querySelectorAll(`.${CSS_HEADER_GROUP_ELEMENT}`).forEach(el => {
+						const holder = el as HTMLElementWithComponent;
+						holder.component?.unload();
+						el.remove();
+					});
 					cmContentContainer.parentElement.insertBefore(groupDiv, cmContentContainer);
 					injectionSuccessful = true;
 				}
 			} else { // Footer in Live Preview
 				const targetParent = view.containerEl.querySelector<HTMLElement>(SELECTOR_EDITOR_SIZER);
 				if (targetParent) {
+					// Ensure idempotency: remove existing footer
+					targetParent.querySelectorAll(`.${CSS_FOOTER_GROUP_ELEMENT}`).forEach(el => {
+						const holder = el as HTMLElementWithComponent;
+						holder.component?.unload();
+						el.remove();
+					});
 					targetParent.appendChild(groupDiv);
 					injectionSuccessful = true;
 				}
@@ -420,7 +437,7 @@ export default class VirtualFooterPlugin extends Plugin {
 
 	/**
 	 * Ensures a MutationObserver is set up for a view in preview mode to handle deferred content injection.
-	 * The observer watches for the appearance of target DOM elements.
+	 * The observer watches for the appearance of target DOM elements and is careful not to act on stale data.
 	 * @param view The MarkdownView to observe.
 	 */
 	private ensurePreviewObserver(view: MarkdownView): void {
@@ -428,26 +445,31 @@ export default class VirtualFooterPlugin extends Plugin {
 			return; // Observer already exists, or view/file/container not ready
 		}
 
+		const observerPath = view.file.path; // Path this observer is responsible for.
+
 		const observer = new MutationObserver((_mutations) => {
-			// If the view or file is no longer valid, disconnect and clean up
-			if (!view.file) {
+			const pending = this.pendingPreviewInjections.get(view);
+
+			// This observer is stale and should self-destruct if:
+			// 1. The view has no file or has navigated to a different file.
+			// 2. There are no pending injections for this view.
+			// 3. The pending injections are for a different file.
+			if (!view.file || view.file.path !== observerPath || !pending || pending.filePath !== observerPath) {
 				observer.disconnect();
-				this.previewObservers.delete(view);
-				const pendingStale = this.pendingPreviewInjections.get(view);
-				if (pendingStale) {
-					pendingStale.headerDiv?.component?.unload();
-					pendingStale.footerDiv?.component?.unload();
-					this.pendingPreviewInjections.delete(view);
+				// Only remove this specific observer instance from the map
+				if (this.previewObservers.get(view) === observer) {
+					this.previewObservers.delete(view);
 				}
 				return;
 			}
 
-			const pending = this.pendingPreviewInjections.get(view);
-			// If no pending injections, disconnect
-			if (!pending || (!pending.headerDiv && !pending.footerDiv)) {
+			// If there's nothing left to inject, clean up and disconnect.
+			if (!pending.headerDiv && !pending.footerDiv) {
 				observer.disconnect();
-				this.previewObservers.delete(view);
-				if (pending) this.pendingPreviewInjections.delete(view); // Clean up entry if it exists
+				if (this.previewObservers.get(view) === observer) {
+					this.previewObservers.delete(view);
+				}
+				this.pendingPreviewInjections.delete(view);
 				return;
 			}
 
@@ -458,6 +480,12 @@ export default class VirtualFooterPlugin extends Plugin {
 			if (pending.headerDiv) {
 				const headerTargetParent = view.previewMode.containerEl.querySelector<HTMLElement>(SELECTOR_PREVIEW_HEADER_AREA);
 				if (headerTargetParent) {
+					// Ensure idempotency: remove any existing header content before adding new.
+					headerTargetParent.querySelectorAll(`.${CSS_HEADER_GROUP_ELEMENT}`).forEach(el => {
+						const holder = el as HTMLElementWithComponent;
+						holder.component?.unload();
+						el.remove();
+					});
 					headerTargetParent.appendChild(pending.headerDiv);
 					if (pending.headerDiv.component) {
 						this.attachInternalLinkHandlers(pending.headerDiv, sourcePath, pending.headerDiv.component);
@@ -472,6 +500,12 @@ export default class VirtualFooterPlugin extends Plugin {
 			if (pending.footerDiv) {
 				const footerTargetParent = view.previewMode.containerEl.querySelector<HTMLElement>(SELECTOR_PREVIEW_FOOTER_AREA);
 				if (footerTargetParent) {
+					// Ensure idempotency: remove any existing footer content before adding new.
+					footerTargetParent.querySelectorAll(`.${CSS_FOOTER_GROUP_ELEMENT}`).forEach(el => {
+						const holder = el as HTMLElementWithComponent;
+						holder.component?.unload();
+						el.remove();
+					});
 					footerTargetParent.appendChild(pending.footerDiv);
 					if (pending.footerDiv.component) {
 						this.attachInternalLinkHandlers(pending.footerDiv, sourcePath, pending.footerDiv.component);
@@ -485,7 +519,9 @@ export default class VirtualFooterPlugin extends Plugin {
 			// If all pending injections are resolved, disconnect the observer
 			if (allResolved) {
 				observer.disconnect();
-				this.previewObservers.delete(view);
+				if (this.previewObservers.get(view) === observer) {
+					this.previewObservers.delete(view);
+				}
 				this.pendingPreviewInjections.delete(view);
 			}
 		});
