@@ -203,7 +203,7 @@ export class VirtualContentView extends ItemView {
 	}
 
 	getIcon() {
-		return 'layout-align-left';
+		return 'text-select';
 	}
 
 	protected async onOpen(): Promise<void> {
