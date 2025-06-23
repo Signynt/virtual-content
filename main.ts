@@ -9,6 +9,8 @@ import {
 	Component,
 	TFile,
 	getAllTags,
+	ItemView,
+	WorkspaceLeaf,
 } from 'obsidian';
 
 // --- Enums ---
@@ -30,6 +32,7 @@ enum ContentSource {
 enum RenderLocation {
 	Footer = 'footer',
 	Header = 'header',
+	Sidebar = 'sidebar',
 }
 
 // --- Interfaces ---
@@ -121,6 +124,8 @@ const SELECTOR_EDITOR_SIZER = '.cm-sizer'; // Target for live preview footer inj
 const SELECTOR_PREVIEW_HEADER_AREA = '.mod-header.mod-ui'; // Target for reading mode header injection
 const SELECTOR_PREVIEW_FOOTER_AREA = '.mod-footer'; // Target for reading mode footer injection
 
+const VIRTUAL_CONTENT_VIEW_TYPE = 'virtual-content-view';
+
 // --- Utility Classes ---
 
 /**
@@ -177,6 +182,66 @@ export class MultiSuggest extends AbstractInputSuggest<string> {
 	}
 }
 
+// --- Sidebar View Class ---
+
+export class VirtualContentView extends ItemView {
+	plugin: VirtualFooterPlugin;
+	viewContent: HTMLElement;
+	component: Component;
+
+	constructor(leaf: WorkspaceLeaf, plugin: VirtualFooterPlugin) {
+		super(leaf);
+		this.plugin = plugin;
+	}
+
+	getViewType() {
+		return VIRTUAL_CONTENT_VIEW_TYPE;
+	}
+
+	getDisplayText() {
+		return 'Virtual Content';
+	}
+
+	getIcon() {
+		return 'layout-align-left';
+	}
+
+	protected async onOpen(): Promise<void> {
+		this.component = new Component();
+		this.component.load();
+
+		const container = this.containerEl.children[1];
+		container.empty();
+		this.viewContent = container.createDiv({ cls: 'virtual-content-sidebar-view' });
+		this.update();
+	}
+
+	protected async onClose(): Promise<void> {
+		this.component.unload();
+	}
+
+	update() {
+		if (!this.viewContent) return;
+
+		// Clean up previous content and component
+		this.viewContent.empty();
+		this.component.unload();
+		this.component = new Component();
+		this.component.load();
+
+		const data = this.plugin.getLastSidebarContent();
+		if (data && data.content && data.content.trim() !== '') {
+			MarkdownRenderer.render(this.app, data.content, this.viewContent, data.sourcePath, this.component);
+			this.plugin.attachInternalLinkHandlers(this.viewContent, data.sourcePath, this.component);
+		} else {
+			this.viewContent.createEl('p', {
+				text: 'No virtual content to display for the current note.',
+				cls: 'virtual-content-sidebar-empty'
+			});
+		}
+	}
+}
+
 // --- Main Plugin Class ---
 
 /**
@@ -190,6 +255,7 @@ export default class VirtualFooterPlugin extends Plugin {
 	/** Manages MutationObservers for views in preview mode to detect when injection targets are ready. */
 	private previewObservers: WeakMap<MarkdownView, MutationObserver> = new WeakMap();
 	private initialLayoutReadyProcessed = false;
+	private lastSidebarContent: { content: string, sourcePath: string } | null = null;
 
 	/**
 	 * Called when the plugin is loaded.
@@ -197,6 +263,23 @@ export default class VirtualFooterPlugin extends Plugin {
 	async onload() {
 		await this.loadSettings();
 		this.addSettingTab(new VirtualFooterSettingTab(this.app, this));
+
+		this.registerView(
+			VIRTUAL_CONTENT_VIEW_TYPE,
+			(leaf) => new VirtualContentView(leaf, this)
+		);
+
+		this.addRibbonIcon('layout-align-left', 'Open Virtual Content', () => {
+			this.activateView();
+		});
+
+		this.addCommand({
+			id: 'open-virtual-content-view',
+			name: 'Open Virtual Content View',
+			callback: () => {
+				this.activateView();
+			},
+		});
 
 		// Define event handlers
 		const handleFileOpenEvent = () => {
@@ -235,6 +318,7 @@ export default class VirtualFooterPlugin extends Plugin {
 	 * Cleans up all injected content and observers.
 	 */
 	async onunload() {
+		this.app.workspace.detachLeavesOfType(VIRTUAL_CONTENT_VIEW_TYPE);
 		this.clearAllViewsDynamicContent();
 
 		// Clean up any remaining DOM elements and components directly
@@ -270,19 +354,19 @@ export default class VirtualFooterPlugin extends Plugin {
 	 */
 	private async _processView(view: MarkdownView | null): Promise<void> {
 		if (!view || !view.file) {
+			// Clear sidebar if no markdown file is active
+			this.lastSidebarContent = null;
+			this.updateSidebarView();
 			return; // No view or file to process
 		}
 
 		await this.removeDynamicContentFromView(view); // Clear existing content first
 		const applicableRulesWithContent = await this._getApplicableRulesAndContent(view.file.path);
 
-		if (applicableRulesWithContent.length === 0) {
-			return; // No rules apply to this file
-		}
-
 		const viewState = view.getState();
 		let combinedHeaderText = "";
 		let combinedFooterText = "";
+		let combinedSidebarText = "";
 		let hasFooterRule = false;
 		const contentSeparator = "\n\n"; // Separator between content from multiple rules
 
@@ -292,11 +376,17 @@ export default class VirtualFooterPlugin extends Plugin {
 
 			if (rule.renderLocation === RenderLocation.Header) {
 				combinedHeaderText += (combinedHeaderText ? contentSeparator : "") + contentText;
-			} else {
+			} else if (rule.renderLocation === RenderLocation.Footer) {
 				combinedFooterText += (combinedFooterText ? contentSeparator : "") + contentText;
 				hasFooterRule = true;
+			} else if (rule.renderLocation === RenderLocation.Sidebar) {
+				combinedSidebarText += (combinedSidebarText ? contentSeparator : "") + contentText;
 			}
 		}
+
+		// Store sidebar content and update the view
+		this.lastSidebarContent = { content: combinedSidebarText, sourcePath: view.file.path };
+		this.updateSidebarView();
 
 		// Apply specific styles for Live Preview footers if needed
 		if (viewState.mode === 'source' && !viewState.source && hasFooterRule) { // Live Preview mode
@@ -602,6 +692,9 @@ export default class VirtualFooterPlugin extends Plugin {
 				this.removeDynamicContentFromView(leaf.view);
 			}
 		});
+		// Also clear sidebar
+		this.lastSidebarContent = null;
+		this.updateSidebarView();
 	}
 
 	/**
@@ -721,7 +814,7 @@ export default class VirtualFooterPlugin extends Plugin {
 	 * @param sourcePath The path of the file where the content is injected, for link resolution.
 	 * @param component The Obsidian Component associated with this content, for event registration.
 	 */
-	private attachInternalLinkHandlers(container: HTMLElement, sourcePath: string, component: Component): void {
+	public attachInternalLinkHandlers(container: HTMLElement, sourcePath: string, component: Component): void {
 		// Handle left-click on internal links
 		component.registerDomEvent(container, 'click', (event: MouseEvent) => {
 			if (event.button !== 0) return; // Only handle left-clicks
@@ -906,6 +999,33 @@ export default class VirtualFooterPlugin extends Plugin {
 		this.settings.rules.forEach(rule => this.normalizeRule(rule));
 		await this.saveData(this.settings);
 		this.handleActiveViewChange(); // Refresh views to apply changes
+	}
+
+	async activateView() {
+		this.app.workspace.detachLeavesOfType(VIRTUAL_CONTENT_VIEW_TYPE);
+
+		const leaf = this.app.workspace.getRightLeaf(true);
+		if (leaf) {
+			await leaf.setViewState({
+				type: VIRTUAL_CONTENT_VIEW_TYPE,
+				active: true,
+			});
+
+			this.app.workspace.revealLeaf(leaf);
+		}
+	}
+
+	private updateSidebarView() {
+		const leaves = this.app.workspace.getLeavesOfType(VIRTUAL_CONTENT_VIEW_TYPE);
+		for (const leaf of leaves) {
+			if (leaf.view instanceof VirtualContentView) {
+				leaf.view.update();
+			}
+		}
+	}
+
+	public getLastSidebarContent(): { content: string, sourcePath: string } | null {
+		return this.lastSidebarContent;
 	}
 }
 
@@ -1296,10 +1416,11 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 		// --- Render Location Setting ---
 		new Setting(ruleContentContainer)
 			.setName('Render location')
-			.setDesc('Choose whether this rule renders its content in the header or footer of the note.')
+			.setDesc('Choose whether this rule renders its content in the header, footer, or a dedicated sidebar tab.')
 			.addDropdown(dropdown => dropdown
 				.addOption(RenderLocation.Footer, 'Footer')
 				.addOption(RenderLocation.Header, 'Header')
+				.addOption(RenderLocation.Sidebar, 'Sidebar')
 				.setValue(rule.renderLocation || RenderLocation.Footer) // Default to Footer
 				.onChange(async (value: string) => {
 					rule.renderLocation = value as RenderLocation;
