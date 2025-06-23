@@ -111,6 +111,8 @@ if (relatedFiles.length > 0) {
 You can also use Virtual Footer to display dataview (or anything else) in the sidebar. This is useful if you want to see the results of a dataview query without having to scroll to the bottom of the file.
 Just select the "Sidebar" option in the settings, and use the "Open virtual content in sidebar" command.
 
+![Untitled](https://github.com/user-attachments/assets/0fa7067a-596e-422b-b676-3f435fa1d49b)
+
 ## Limitations
 
 Links in the markdown text work natively when in Reading mode, however they don't in Live Preview, so I've added a workaround that gets most functionality back. This means that `left click` works to open the link in the current tab, and `middle mouse` and `ctrl/cmd + left click` works to open the link in a new tab. Right click currently doesn't work.
