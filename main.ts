@@ -269,13 +269,13 @@ export default class VirtualFooterPlugin extends Plugin {
 			(leaf) => new VirtualContentView(leaf, this)
 		);
 
-		this.addRibbonIcon('layout-align-left', 'Open virtual content sidebar', () => {
+		this.addRibbonIcon('layout-align-left', 'Open virtual content in sidebar', () => {
 			this.activateView();
 		});
 
 		this.addCommand({
 			id: 'open-virtual-content-sidebar',
-			name: 'Open virtual content sidebar',
+			name: 'Open virtual content in sidebar',
 			callback: () => {
 				this.activateView();
 			},

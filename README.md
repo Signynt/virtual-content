@@ -8,7 +8,7 @@ This is especially useful if you have many files with the same dataview block. I
 - Works with Dataview, Datacore and native Obisidan Bases
 - Lets you define rules using folderes, tags and properties
 	- Rules can be set to include or exclude subfolders and subtags (recursive matching)
-- Lets you select wether the "virtual content" gets added as a footer (end of file) or a header (below properties)
+- Lets you select wether the "virtual content" gets added as a footer (end of file), a header (below properties) or in the sidebar
 - Allows for "virtual content" to be defined in the plugin settings, or in a markdown file
 - Rules can be enabled or disabled from the plugin settings
 
@@ -106,6 +106,10 @@ if (relatedFiles.length > 0) {
 }
 ```
 `````
+
+### Displaying dataview in the sidebar
+You can also use Virtual Footer to display dataview (or anything else) in the sidebar. This is useful if you want to see the results of a dataview query without having to scroll to the bottom of the file.
+Just select the "Sidebar" option in the settings, and use the "Open virtual content in sidebar" command.
 
 ## Limitations
 
