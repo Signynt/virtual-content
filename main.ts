@@ -282,27 +282,33 @@ export default class VirtualFooterPlugin extends Plugin {
 		});
 
 		// Define event handlers
-		const handleFileOpenEvent = () => {
-			// Only trigger if the setting is enabled and initial layout is ready
-			if (this.settings.refreshOnFileOpen && this.initialLayoutReadyProcessed) {
+		const handleViewUpdate = () => {
+			// Always trigger an update if the layout is ready.
+			// Used for file-open and layout-change.
+			if (this.initialLayoutReadyProcessed) {
 				this.handleActiveViewChange();
 			}
 		};
 
-		const handleLayoutChangeEvent = () => {
-			// Always trigger on layout change if initial layout is ready
-			if (this.initialLayoutReadyProcessed) {
+		const handleFocusChange = () => {
+			// This is the "focus change" or "switching files" part, conditional on the setting.
+			// Used for active-leaf-change.
+			if (this.settings.refreshOnFileOpen && this.initialLayoutReadyProcessed) {
 				this.handleActiveViewChange();
 			}
 		};
 
 		// Register event listeners
 		this.registerEvent(
-			this.app.workspace.on('file-open', handleFileOpenEvent)
+			this.app.workspace.on('file-open', handleViewUpdate)
 		);
 		this.registerEvent(
-			this.app.workspace.on('layout-change', handleLayoutChangeEvent)
+			this.app.workspace.on('layout-change', handleViewUpdate)
 		);
+		this.registerEvent(
+			this.app.workspace.on('active-leaf-change', handleFocusChange)
+		);
+
 
 		// Initial processing for any currently active view, once layout is ready
 		this.app.workspace.onLayoutReady(() => {
