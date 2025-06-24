@@ -360,9 +360,13 @@ export default class VirtualFooterPlugin extends Plugin {
 	 */
 	private async _processView(view: MarkdownView | null): Promise<void> {
 		if (!view || !view.file) {
-			// Clear sidebar if no markdown file is active
-			this.lastSidebarContent = null;
-			this.updateSidebarView();
+			// If 'refresh on focus' is off, we clear the sidebar when focus is lost from a markdown file.
+			// If it's on, we only clear the sidebar if the last markdown file has been closed,
+			// preserving the content when switching to non-markdown views.
+			if (!this.settings.refreshOnFileOpen || this.app.workspace.getLeavesOfType('markdown').length === 0) {
+				this.lastSidebarContent = null;
+				this.updateSidebarView();
+			}
 			return; // No view or file to process
 		}
 
@@ -1142,7 +1146,7 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 		// --- General Settings Section ---
 		new Setting(containerEl)
 			.setName('Refresh on focus change')
-			.setDesc('If enabled, virtual content will refresh when switching files. This may cause a slight flicker but is useful if you frequently change the text of virtual content and need immediate updates. If disabled the virtual content will be updated on file open and view change (editing/reading view). Disabled by default.')
+			.setDesc('If enabled, virtual content will refresh when switching files. This may cause a slight flicker but is useful if you frequently change the text of virtual content and need immediate updates. If disabled the virtual content will be updated on file open and view change (editing/reading view). To prevent virtual content in the sidebar disappearing when clicking out of a note, it will always keep the last notes virtual content open, which means new tabs will show the virtual content of the last used note. Disabled by default.')
 			.addToggle(toggle => toggle
 				.setValue(this.plugin.settings.refreshOnFileOpen!) // Value is ensured by loadSettings
 				.onChange(async (value) => {
