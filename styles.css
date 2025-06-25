@@ -57,3 +57,24 @@
     /* margin-left: 2px; */
     padding-bottom: 10px;
 }
+
+/*
+By default, hide the plugin's dynamic content when printing.
+This ensures it only appears in the PDF export if the user has enabled the setting.
+*/
+@media print {
+ .virtual-footer-dynamic-content-element {
+    display: none!important;
+  }
+}
+
+/*
+When the user enables the "Include in PDF export" setting, the plugin adds
+the 'virtual-content-include-in-pdf' class to the body.
+This rule overrides the default print style, making the content visible for export.
+*/
+@media print {
+  body.virtual-content-include-in-pdf.virtual-footer-dynamic-content-element {
+    display: block!important; /* Use!important to ensure override */
+  }
+}

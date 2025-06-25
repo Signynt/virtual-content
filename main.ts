@@ -69,6 +69,8 @@ interface Rule {
 	footerFilePath?: string; // Retained name for compatibility.
 	/** Specifies whether to render in the header or footer. */
 	renderLocation: RenderLocation;
+	/** Whether to include this rule in PDF exports. Defaults to true. */
+	includeInPdfExport: boolean;
 }
 
 /**
@@ -79,6 +81,8 @@ interface VirtualFooterSettings {
 	rules: Rule[];
 	/** Whether to refresh the view on file open. Defaults to false. */
 	refreshOnFileOpen?: boolean;
+	/** Whether to include this rule in PDF exports. Defaults to true. */
+	includeInPdfExport: boolean;
 }
 
 /**
@@ -103,8 +107,10 @@ const DEFAULT_SETTINGS: VirtualFooterSettings = {
 		contentSource: ContentSource.Text,
 		footerText: '', // Default content is empty
 		renderLocation: RenderLocation.Footer,
+		includeInPdfExport: true,
 	}],
 	refreshOnFileOpen: false, // Default to false
+	includeInPdfExport: false,
 };
 
 // CSS Classes for styling and identifying plugin-generated elements
@@ -316,6 +322,19 @@ export default class VirtualFooterPlugin extends Plugin {
 				this.handleActiveViewChange(); // Process the initially open view
 				this.initialLayoutReadyProcessed = true;
 			}
+			this.updateBodyClass();
+		});
+
+		this.registerMarkdownPostProcessor((element, context) => {
+			// Unconditionally create the header element with a specific class
+			const headerEl = element.createEl('div', { cls: 'virtual-header' });
+			// Populate it with your desired content (static or dynamic)
+			headerEl.setText('This is the virtual header content.');
+
+			// Unconditionally create the footer element with a specific class
+			const footerEl = element.createEl('div', { cls: 'virtual-footer' });
+			// Populate it with your desired content
+			footerEl.setText('This is the virtual footer content.');
 		});
 	}
 
@@ -344,7 +363,13 @@ export default class VirtualFooterPlugin extends Plugin {
 		// Observers and pending injections are cleared per-view in `removeDynamicContentFromView`.
 		this.previewObservers = new WeakMap();
 		this.pendingPreviewInjections = new WeakMap();
-	}
+
+	const masterClass = 'pdf-export-with-virtual-content';
+	this.app.workspace.getLeavesOfType('markdown').forEach(leaf => {
+		const body = (leaf.view.containerEl.ownerDocument || document).body;
+		body.classList.remove(masterClass);
+	});
+}
 
 	/**
 	 * Handles changes to the active Markdown view, triggering content processing.
@@ -931,6 +956,7 @@ export default class VirtualFooterPlugin extends Plugin {
 			footerText: loadedRule.footerText || '', // Retain name for compatibility
 			renderLocation: loadedRule.renderLocation || globalRenderLocation || DEFAULT_SETTINGS.rules[0].renderLocation,
 			recursive: loadedRule.recursive !== undefined ? loadedRule.recursive : true,
+			includeInPdfExport: loadedRule.includeInPdfExport !== undefined ? loadedRule.includeInPdfExport : true,
 		};
 
 		// Populate type-specific fields
@@ -1037,6 +1063,24 @@ export default class VirtualFooterPlugin extends Plugin {
 	public getLastSidebarContent(): { content: string, sourcePath: string } | null {
 		return this.lastSidebarContent;
 	}
+
+	updateBodyClass(): void {
+		const masterClass = 'pdf-export-with-virtual-content';
+		
+		// Iterate over all currently open markdown leaves (notes). This handles
+		// split panes and pop-out windows correctly.
+		this.app.workspace.getLeavesOfType('markdown').forEach(leaf => {
+			// Access the body element of the document containing the leaf's view.
+			// This correctly targets the body of pop-out windows as well.
+			const body = (leaf.view.containerEl.ownerDocument || document).body;
+			
+			if (this.settings.includeInPdfExport) {
+				body.classList.add(masterClass);
+			} else {
+				body.classList.remove(masterClass);
+			}
+		});
+  	}
 }
 
 // --- Settings Tab Class ---
@@ -1152,6 +1196,17 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 				.onChange(async (value) => {
 					this.plugin.settings.refreshOnFileOpen = value;
 					await this.plugin.saveSettings();
+				}));
+			
+		new Setting(containerEl)
+			.setName('Include in PDF export')
+			.setDesc('If enabled, the virtual header and footer will be included in notes exported to PDF.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.includeInPdfExport)
+				.onChange(async (value) => {
+					this.plugin.settings.includeInPdfExport = value;
+					await this.plugin.saveSettings();
+					this.plugin.updateBodyClass(); // This function will apply the state change
 				}));
 		
 		containerEl.createEl('h3', { text: 'Rules' });
