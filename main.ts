@@ -334,6 +334,11 @@ export default class VirtualFooterPlugin extends Plugin {
 				return;
 			}
 
+			// Prevent recursion: if we are already inside a virtual content element, do nothing.
+			if (element.closest('.virtual-header, .virtual-footer')) {
+				return;
+			}
+
 			const sourcePath = context.sourcePath;
 			const file = this.app.vault.getAbstractFileByPath(sourcePath);
 			if (!file) return;
@@ -1121,7 +1126,7 @@ export default class VirtualFooterPlugin extends Plugin {
 				body.classList.remove(masterClass);
 			}
 		});
-  	}
+	}
 }
 
 // --- Settings Tab Class ---
