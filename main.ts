@@ -11,6 +11,7 @@ import {
 	getAllTags,
 	ItemView,
 	WorkspaceLeaf,
+	MarkdownRenderChild,
 } from 'obsidian';
 
 // --- Enums ---
@@ -325,17 +326,57 @@ export default class VirtualFooterPlugin extends Plugin {
 			this.updateBodyClass();
 		});
 
-		this.registerMarkdownPostProcessor((element, context) => {
-			// Unconditionally create the header element with a specific class
-			const headerEl = element.createEl('div', { cls: 'virtual-header' });
-			// Populate it with your desired content (static or dynamic)
-			headerEl.setText('This is the virtual header content.');
+		this.registerMarkdownPostProcessor(async (element, context) => {
+			// This post-processor is primarily for PDF export.
+			// The live views are handled by _processView.
+			// We check if the global PDF export setting is enabled.
+			if (!this.settings.includeInPdfExport) {
+				return;
+			}
 
-			// Unconditionally create the footer element with a specific class
-			const footerEl = element.createEl('div', { cls: 'virtual-footer' });
-			// Populate it with your desired content
-			footerEl.setText('This is the virtual footer content.');
+			const sourcePath = context.sourcePath;
+			const file = this.app.vault.getAbstractFileByPath(sourcePath);
+			if (!file) return;
+
+			// Get the applicable content for the current file.
+			const applicableRulesWithContent = await this._getApplicableRulesAndContent(sourcePath);
+
+			let combinedHeaderText = "";
+			let combinedFooterText = "";
+			const contentSeparator = "\n\n";
+
+			// Combine content from all applicable rules, respecting their individual PDF export setting.
+			for (const { rule, contentText } of applicableRulesWithContent) {
+				// A rule's content is included if the rule is enabled, has text, and is marked for PDF export.
+				if (!contentText || contentText.trim() === "" || !rule.includeInPdfExport) continue;
+
+				if (rule.renderLocation === RenderLocation.Header) {
+					combinedHeaderText += (combinedHeaderText ? contentSeparator : "") + contentText;
+				} else if (rule.renderLocation === RenderLocation.Footer) {
+					combinedFooterText += (combinedFooterText ? contentSeparator : "") + contentText;
+				}
+			}
+			// Create a component for managing the lifecycle of the rendered content.
+			const component = new Component();
+			component.load();
+			// Tie the component's lifecycle to the markdown post-processor's context.
+			const child = new MarkdownRenderChild(element);
+			child.onunload = () => component.unload();
+			context.addChild(child);
+
+			// Render and inject the header content if it exists.
+			if (combinedHeaderText.trim()) {
+				const headerEl = element.createEl('div', { cls: 'virtual-header' });
+				await MarkdownRenderer.render(this.app, combinedHeaderText, headerEl, sourcePath, component);
+			}
+
+			// Render and inject the footer content if it exists.
+			if (combinedFooterText.trim()) {
+				const footerEl = element.createEl('div', { cls: 'virtual-footer' });
+				await MarkdownRenderer.render(this.app, combinedFooterText, footerEl, sourcePath, component);
+			}
 		});
+
 	}
 
 	/**
