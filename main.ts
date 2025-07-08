@@ -11,7 +11,6 @@ import {
 	getAllTags,
 	ItemView,
 	WorkspaceLeaf,
-	MarkdownRenderChild,
 } from 'obsidian';
 
 // --- Enums ---
@@ -85,7 +84,79 @@ interface VirtualFooterSettings {
 	/** Whether to include this rule in PDF exports. Defaults to true. */
 	includeInPdfExport: boolean;
 }
+/**
+ * A partial interface for the MarkdownPostProcessorContext, defining the properties
+ * used by the PDF export functionality. This ensures type safety for the helper function.
+ */
+interface MarkdownPostProcessorContext {
+	sourcePath: string;
+	frontmatter: any;
+	addChild(component: Component): void;
+}
 
+/**
+ * An async helper function to process and inject virtual content into PDF exports.
+ * This is designed to be called from within a `registerMarkdownPostProcessor` callback.
+ * It replaces the static test content with dynamic content based on the plugin's rules.
+ * @param plugin A reference to the main VirtualFooterPlugin instance.
+ * @param element The HTML element being processed by the post-processor.
+ * @param context The context object provided by the post-processor.
+ */
+async function addPdfContent(plugin: VirtualFooterPlugin, element: HTMLElement, context: MarkdownPostProcessorContext): Promise<void> {
+	if (!plugin.settings.includeInPdfExport) {
+		return; // Exit if PDF export is disabled globally in settings.
+	}
+
+	// During PDF export, the post-processor runs on the container for the entire document.
+	// We check for the presence of frontmatter in the context, which is a reliable
+	// heuristic to ensure we're targeting the main document and not a sub-render
+	// (e.g., in a Dataview block), thus preventing duplicate content.
+	if (!context.frontmatter) {
+		return;
+	}
+
+	const applicableRulesWithContent = await plugin['_getApplicableRulesAndContent'](context.sourcePath);
+
+	if (!applicableRulesWithContent || applicableRulesWithContent.length === 0) {
+		return; // No rules apply to this file.
+	}
+
+	let combinedHeaderText = "";
+	let combinedFooterText = "";
+	const contentSeparator = "\n\n";
+
+	// Combine content from all applicable rules, checking each rule's individual export setting.
+	for (const { rule, contentText } of applicableRulesWithContent) {
+		// Skip if content is empty or if the rule is explicitly excluded from PDF exports.
+		if (!contentText || contentText.trim() === "" || rule.includeInPdfExport === false) {
+			continue;
+		}
+
+		if (rule.renderLocation === RenderLocation.Header) {
+			combinedHeaderText += (combinedHeaderText ? contentSeparator : "") + contentText;
+		} else if (rule.renderLocation === RenderLocation.Footer) {
+			combinedFooterText += (combinedFooterText ? contentSeparator : "") + contentText;
+		}
+		// Sidebar content is intentionally ignored for PDF export.
+	}
+
+	// Create a component for lifecycle management, tied to the post-processor context.
+	// This ensures that any components created by the renderer (like event handlers) are properly cleaned up.
+	const component = new Component();
+	context.addChild(component);
+
+	// Render and append the header content if any exists.
+	if (combinedHeaderText.trim()) {
+		const headerEl = element.createEl('div', { cls: 'virtual-header' });
+		await MarkdownRenderer.render(plugin.app, combinedHeaderText, headerEl, context.sourcePath, component);
+	}
+
+	// Render and append the footer content if any exists.
+	if (combinedFooterText.trim()) {
+		const footerEl = element.createEl('div', { cls: 'virtual-footer' });
+		await MarkdownRenderer.render(plugin.app, combinedFooterText, footerEl, context.sourcePath, component);
+	}
+}
 /**
  * Extends HTMLElement to associate an Obsidian Component for lifecycle management.
  * This allows Obsidian to manage resources tied to the DOM element.
@@ -326,62 +397,17 @@ export default class VirtualFooterPlugin extends Plugin {
 			this.updateBodyClass();
 		});
 
-		this.registerMarkdownPostProcessor(async (element, context) => {
-			// This post-processor is primarily for PDF export.
-			// The live views are handled by _processView.
-			// We check if the global PDF export setting is enabled.
-			if (!this.settings.includeInPdfExport) {
-				return;
-			}
+		this.registerMarkdownPostProcessor((element, context) => {
+			// Unconditionally create the header element with a specific class
+			const headerEl = element.createEl('div', { cls: 'virtual-header' });
+			// Populate it with your desired content (static or dynamic)
+			headerEl.setText('This is the virtual header content.');
 
-			// Prevent recursion: if we are already inside a virtual content element, do nothing.
-			if (element.closest('.virtual-header, .virtual-footer')) {
-				return;
-			}
-
-			const sourcePath = context.sourcePath;
-			const file = this.app.vault.getAbstractFileByPath(sourcePath);
-			if (!file) return;
-
-			// Get the applicable content for the current file.
-			const applicableRulesWithContent = await this._getApplicableRulesAndContent(sourcePath);
-
-			let combinedHeaderText = "";
-			let combinedFooterText = "";
-			const contentSeparator = "\n\n";
-
-			// Combine content from all applicable rules, respecting their individual PDF export setting.
-			for (const { rule, contentText } of applicableRulesWithContent) {
-				// A rule's content is included if the rule is enabled, has text, and is marked for PDF export.
-				if (!contentText || contentText.trim() === "" || !rule.includeInPdfExport) continue;
-
-				if (rule.renderLocation === RenderLocation.Header) {
-					combinedHeaderText += (combinedHeaderText ? contentSeparator : "") + contentText;
-				} else if (rule.renderLocation === RenderLocation.Footer) {
-					combinedFooterText += (combinedFooterText ? contentSeparator : "") + contentText;
-				}
-			}
-			// Create a component for managing the lifecycle of the rendered content.
-			const component = new Component();
-			component.load();
-			// Tie the component's lifecycle to the markdown post-processor's context.
-			const child = new MarkdownRenderChild(element);
-			child.onunload = () => component.unload();
-			context.addChild(child);
-
-			// Render and inject the header content if it exists.
-			if (combinedHeaderText.trim()) {
-				const headerEl = element.createEl('div', { cls: 'virtual-header' });
-				await MarkdownRenderer.render(this.app, combinedHeaderText, headerEl, sourcePath, component);
-			}
-
-			// Render and inject the footer content if it exists.
-			if (combinedFooterText.trim()) {
-				const footerEl = element.createEl('div', { cls: 'virtual-footer' });
-				await MarkdownRenderer.render(this.app, combinedFooterText, footerEl, sourcePath, component);
-			}
+			// Unconditionally create the footer element with a specific class
+			const footerEl = element.createEl('div', { cls: 'virtual-footer' });
+			// Populate it with your desired content
+			footerEl.setText('This is the virtual footer content.');
 		});
-
 	}
 
 	/**
@@ -1126,7 +1152,7 @@ export default class VirtualFooterPlugin extends Plugin {
 				body.classList.remove(masterClass);
 			}
 		});
-	}
+  	}
 }
 
 // --- Settings Tab Class ---
