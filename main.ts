@@ -11,6 +11,7 @@ import {
 	getAllTags,
 	ItemView,
 	WorkspaceLeaf,
+	debounce,
 } from 'obsidian';
 
 // --- Enums ---
@@ -1221,10 +1222,16 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 	private allMarkdownFilePathsCache: Set<string> | null = null;
 	private allPropertyNamesCache: Set<string> | null = null;
 	private ruleExpandedStates: boolean[] = [];
+	private debouncedSave: () => void;
+	private debouncedSaveAndRefresh: () => void;
 
 
 	constructor(app: App, private plugin: VirtualFooterPlugin) {
 		super(app, plugin);
+		this.debouncedSave = debounce(() => this.plugin.saveSettings(), 1000, true);
+		this.debouncedSaveAndRefresh = debounce(() => {
+			this.plugin.saveSettings().then(() => this.display());
+		}, 1000, true);
 	}
 
 	/**
@@ -1414,12 +1421,12 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 			.addText(text => text
 				.setPlaceholder('e.g., Blog Post Footer')
 				.setValue(rule.name || '')
-				.onChange(async (value) => {
+				.onChange((value) => {
 					rule.name = value;
 					// Update heading text dynamically
 					const newNameDisplay = (value && value.trim() !== '') ? value : 'Unnamed Rule';
 					ruleHeading.textContent = `Rule ${index + 1}: ${newNameDisplay}`;
-					await this.plugin.saveSettings();
+					this.debouncedSave();
 				}));
 
 		// --- Enabled/Disabled Toggle ---
@@ -1465,11 +1472,10 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 				.addText(text => {
 					text.setPlaceholder('e.g., Meetings/, /, or empty for all')
 						.setValue(rule.path || '')
-						.onChange(async (value) => {
+						.onChange((value) => {
 							rule.path = value;
 							this.plugin.normalizeRule(rule); // Normalize path and recursive flag
-							await this.plugin.saveSettings();
-							this.display(); // Re-render to update recursive toggle state if needed
+							this.debouncedSaveAndRefresh();
 						});
 					// Attach suggestion provider for folder paths
 					new MultiSuggest(text.inputEl, this.getAvailableFolderPaths(), (selectedPath) => {
@@ -1502,10 +1508,10 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 				.addText(text => {
 					text.setPlaceholder('e.g., important or project/alpha')
 						.setValue(rule.tag || '')
-						.onChange(async (value) => {
+						.onChange((value) => {
 							// Ensure tag doesn't start with '#'
 							rule.tag = value.startsWith('#') ? value.substring(1) : value;
-							await this.plugin.saveSettings();
+							this.debouncedSave();
 						});
 					new MultiSuggest(text.inputEl, this.getAvailableTags(), (selectedTag) => {
 						const normalizedTag = selectedTag.startsWith('#') ? selectedTag.substring(1) : selectedTag;
@@ -1532,9 +1538,9 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 				.addText(text => {
 					text.setPlaceholder('e.g., status, type, author')
 						.setValue(rule.propertyName || '')
-						.onChange(async (value) => {
+						.onChange((value) => {
 							rule.propertyName = value;
-							await this.plugin.saveSettings();
+							this.debouncedSave();
 						});
 					new MultiSuggest(text.inputEl, this.getAvailablePropertyNames(), (selectedName) => {
 						rule.propertyName = selectedName;
@@ -1549,9 +1555,9 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 				.addText(text => text
 					.setPlaceholder('e.g., complete, article, John Doe')
 					.setValue(rule.propertyValue || '')
-					.onChange(async (value) => {
+					.onChange((value) => {
 						rule.propertyValue = value;
-						await this.plugin.saveSettings();
+						this.debouncedSave();
 					}));
 		} else if (rule.type === RuleType.Multi) {
 			this.renderMultiConditionControls(rule, ruleContentContainer);
@@ -1579,9 +1585,9 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 				.addText(text => {
 					text.setPlaceholder('e.g., templates/common-footer.md')
 						.setValue(rule.footerFilePath || '') // Retained name for compatibility
-						.onChange(async (value) => {
+						.onChange((value) => {
 							rule.footerFilePath = value;
-							await this.plugin.saveSettings();
+							this.debouncedSave();
 						});
 					new MultiSuggest(text.inputEl, this.getAvailableMarkdownFilePaths(), (selectedPath) => {
 						rule.footerFilePath = selectedPath;
@@ -1596,9 +1602,9 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 				.addTextArea(text => text
 					.setPlaceholder('Enter your markdown content here...\nSupports multiple lines and **Markdown** formatting.')
 					.setValue(rule.footerText || '') // Retained name for compatibility
-					.onChange(async (value) => {
+					.onChange((value) => {
 						rule.footerText = value;
-						await this.plugin.saveSettings();
+						this.debouncedSave();
 					}));
 		}
 
@@ -1638,9 +1644,9 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 					.addText(text => text
 						.setPlaceholder('e.g., Related Notes')
 						.setValue(rule.sidebarTabName || '')
-						.onChange(async (value) => {
+						.onChange((value) => {
 							rule.sidebarTabName = value;
-							await this.plugin.saveSettings();
+							this.debouncedSave();
 						}));
 			}
 		}
@@ -1768,9 +1774,9 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 			setting.addText(text => {
 				text.setPlaceholder('Folder path')
 					.setValue(condition.path || '')
-					.onChange(async (value) => {
+					.onChange((value) => {
 						condition.path = value;
-						await this.plugin.saveSettings();
+						this.debouncedSave();
 					});
 				new MultiSuggest(text.inputEl, this.getAvailableFolderPaths(), (selected) => {
 					condition.path = selected;
@@ -1790,9 +1796,9 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 			setting.addText(text => {
 				text.setPlaceholder('Tag value (no #)')
 					.setValue(condition.tag || '')
-					.onChange(async (value) => {
+					.onChange((value) => {
 						condition.tag = value.startsWith('#') ? value.substring(1) : value;
-						await this.plugin.saveSettings();
+						this.debouncedSave();
 					});
 				new MultiSuggest(text.inputEl, this.getAvailableTags(), (selected) => {
 					const normalized = selected.startsWith('#') ? selected.substring(1) : selected;
@@ -1813,9 +1819,9 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 			setting.addText(text => {
 				text.setPlaceholder('Property name')
 					.setValue(condition.propertyName || '')
-					.onChange(async (value) => {
+					.onChange((value) => {
 						condition.propertyName = value;
-						await this.plugin.saveSettings();
+						this.debouncedSave();
 					});
 				new MultiSuggest(text.inputEl, this.getAvailablePropertyNames(), (selected) => {
 					condition.propertyName = selected;
@@ -1826,9 +1832,9 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 			setting.addText(text => text
 				.setPlaceholder('Property value')
 				.setValue(condition.propertyValue || '')
-				.onChange(async (value) => {
+				.onChange((value) => {
 					condition.propertyValue = value;
-					await this.plugin.saveSettings();
+					this.debouncedSave();
 				})
 			);
 		}
