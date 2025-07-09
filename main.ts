@@ -69,6 +69,10 @@ interface Rule {
 	footerFilePath?: string; // Retained name for compatibility.
 	/** Specifies whether to render in the header or footer. */
 	renderLocation: RenderLocation;
+	/** For 'sidebar' location: whether to show in a separate tab. */
+	showInSeparateTab?: boolean;
+	/** For 'sidebar' location: the name of the separate tab. */
+	sidebarTabName?: string;
 }
 
 /**
@@ -103,6 +107,8 @@ const DEFAULT_SETTINGS: VirtualFooterSettings = {
 		contentSource: ContentSource.Text,
 		footerText: '', // Default content is empty
 		renderLocation: RenderLocation.Footer,
+		showInSeparateTab: false,
+		sidebarTabName: '',
 	}],
 	refreshOnFileOpen: false, // Default to false
 };
@@ -125,6 +131,7 @@ const SELECTOR_PREVIEW_HEADER_AREA = '.mod-header.mod-ui'; // Target for reading
 const SELECTOR_PREVIEW_FOOTER_AREA = '.mod-footer'; // Target for reading mode footer injection
 
 const VIRTUAL_CONTENT_VIEW_TYPE = 'virtual-content-view';
+const VIRTUAL_CONTENT_SEPARATE_VIEW_TYPE_PREFIX = 'virtual-content-separate-view-';
 
 // --- Utility Classes ---
 
@@ -188,18 +195,24 @@ export class VirtualContentView extends ItemView {
 	plugin: VirtualFooterPlugin;
 	viewContent: HTMLElement;
 	component: Component;
+	private contentProvider: () => { content: string, sourcePath: string } | null;
+	private viewId: string;
+	private tabName: string;
 
-	constructor(leaf: WorkspaceLeaf, plugin: VirtualFooterPlugin) {
+	constructor(leaf: WorkspaceLeaf, plugin: VirtualFooterPlugin, viewId: string, tabName: string, contentProvider: () => { content: string, sourcePath: string } | null) {
 		super(leaf);
 		this.plugin = plugin;
+		this.viewId = viewId;
+		this.tabName = tabName;
+		this.contentProvider = contentProvider;
 	}
 
 	getViewType() {
-		return VIRTUAL_CONTENT_VIEW_TYPE;
+		return this.viewId;
 	}
 
 	getDisplayText() {
-		return 'Virtual Content';
+		return this.tabName;
 	}
 
 	getIcon() {
@@ -216,6 +229,8 @@ export class VirtualContentView extends ItemView {
 		this.update();
 	}
 
+
+
 	protected async onClose(): Promise<void> {
 		this.component.unload();
 	}
@@ -229,7 +244,7 @@ export class VirtualContentView extends ItemView {
 		this.component = new Component();
 		this.component.load();
 
-		const data = this.plugin.getLastSidebarContent();
+		const data = this.contentProvider();
 		if (data && data.content && data.content.trim() !== '') {
 			MarkdownRenderer.render(this.app, data.content, this.viewContent, data.sourcePath, this.component);
 			this.plugin.attachInternalLinkHandlers(this.viewContent, data.sourcePath, this.component);
@@ -256,6 +271,7 @@ export default class VirtualFooterPlugin extends Plugin {
 	private previewObservers: WeakMap<MarkdownView, MutationObserver> = new WeakMap();
 	private initialLayoutReadyProcessed = false;
 	private lastSidebarContent: { content: string, sourcePath: string } | null = null;
+	private lastSeparateTabContents: Map<string, { content: string, sourcePath: string }> = new Map();
 
 	/**
 	 * Called when the plugin is loaded.
@@ -266,18 +282,28 @@ export default class VirtualFooterPlugin extends Plugin {
 
 		this.registerView(
 			VIRTUAL_CONTENT_VIEW_TYPE,
-			(leaf) => new VirtualContentView(leaf, this)
+			(leaf) => new VirtualContentView(leaf, this, VIRTUAL_CONTENT_VIEW_TYPE, 'Virtual Content', () => this.getLastSidebarContent())
 		);
 
+		this.registerDynamicViews();
+
 		this.addRibbonIcon('text-select', 'Open virtual content in sidebar', () => {
-			this.activateView();
+			this.activateView(VIRTUAL_CONTENT_VIEW_TYPE);
 		});
 
 		this.addCommand({
 			id: 'open-virtual-content-sidebar',
 			name: 'Open virtual content in sidebar',
 			callback: () => {
-				this.activateView();
+				this.activateView(VIRTUAL_CONTENT_VIEW_TYPE);
+			},
+		});
+
+		this.addCommand({
+			id: 'open-all-virtual-content-sidebar-tabs',
+			name: 'Open all virtual footer sidebar tabs',
+			callback: () => {
+				this.activateAllSidebarViews();
 			},
 		});
 
@@ -325,6 +351,11 @@ export default class VirtualFooterPlugin extends Plugin {
 	 */
 	async onunload() {
 		this.app.workspace.detachLeavesOfType(VIRTUAL_CONTENT_VIEW_TYPE);
+		this.settings.rules.forEach((rule, index) => {
+			if (rule.renderLocation === RenderLocation.Sidebar && rule.showInSeparateTab) {
+				this.app.workspace.detachLeavesOfType(this.getSeparateViewId(index));
+			}
+		});
 		this.clearAllViewsDynamicContent();
 
 		// Clean up any remaining DOM elements and components directly
@@ -365,7 +396,8 @@ export default class VirtualFooterPlugin extends Plugin {
 			// preserving the content when switching to non-markdown views.
 			if (!this.settings.refreshOnFileOpen || this.app.workspace.getLeavesOfType('markdown').length === 0) {
 				this.lastSidebarContent = null;
-				this.updateSidebarView();
+				this.lastSeparateTabContents.clear();
+				this.updateAllSidebarViews();
 			}
 			return; // No view or file to process
 		}
@@ -379,9 +411,10 @@ export default class VirtualFooterPlugin extends Plugin {
 		let combinedSidebarText = "";
 		let hasFooterRule = false;
 		const contentSeparator = "\n\n"; // Separator between content from multiple rules
+		this.lastSeparateTabContents.clear();
 
 		// Combine content from all applicable rules
-		for (const { rule, contentText } of applicableRulesWithContent) {
+		for (const { rule, contentText, index } of applicableRulesWithContent) {
 			if (!contentText || contentText.trim() === "") continue; // Skip empty content
 
 			if (rule.renderLocation === RenderLocation.Header) {
@@ -390,13 +423,22 @@ export default class VirtualFooterPlugin extends Plugin {
 				combinedFooterText += (combinedFooterText ? contentSeparator : "") + contentText;
 				hasFooterRule = true;
 			} else if (rule.renderLocation === RenderLocation.Sidebar) {
-				combinedSidebarText += (combinedSidebarText ? contentSeparator : "") + contentText;
+				if (rule.showInSeparateTab) {
+					const viewId = this.getSeparateViewId(index);
+					const existingContent = this.lastSeparateTabContents.get(viewId)?.content || "";
+					this.lastSeparateTabContents.set(viewId, {
+						content: (existingContent ? existingContent + contentSeparator : "") + contentText,
+						sourcePath: view.file.path
+					});
+				} else {
+					combinedSidebarText += (combinedSidebarText ? contentSeparator : "") + contentText;
+				}
 			}
 		}
 
 		// Store sidebar content and update the view
 		this.lastSidebarContent = { content: combinedSidebarText, sourcePath: view.file.path };
-		this.updateSidebarView();
+		this.updateAllSidebarViews();
 
 		// Apply specific styles for Live Preview footers if needed
 		if (viewState.mode === 'source' && !viewState.source && hasFooterRule) { // Live Preview mode
@@ -704,7 +746,8 @@ export default class VirtualFooterPlugin extends Plugin {
 		});
 		// Also clear sidebar
 		this.lastSidebarContent = null;
-		this.updateSidebarView();
+		this.lastSeparateTabContents.clear();
+		this.updateAllSidebarViews();
 	}
 
 	/**
@@ -712,8 +755,8 @@ export default class VirtualFooterPlugin extends Plugin {
 	 * @param filePath The path of the file to check against rules.
 	 * @returns A promise that resolves to an array of objects, each containing an applicable rule and its content.
 	 */
-	private async _getApplicableRulesAndContent(filePath: string): Promise<Array<{ rule: Rule; contentText: string }>> {
-		const allApplicable: Array<{ rule: Rule; contentText: string }> = [];
+	private async _getApplicableRulesAndContent(filePath: string): Promise<Array<{ rule: Rule; contentText: string; index: number }>> {
+		const allApplicable: Array<{ rule: Rule; contentText: string; index: number }> = [];
 		const abstractFile = this.app.vault.getAbstractFileByPath(filePath);
 
 		if (!(abstractFile instanceof TFile)) {
@@ -730,7 +773,7 @@ export default class VirtualFooterPlugin extends Plugin {
 			fileTags = allTagsInFileWithHash ? allTagsInFileWithHash.map(tag => tag.substring(1)) : [];
 		}
 
-		for (const currentRule of this.settings.rules) {
+		for (const [index, currentRule] of this.settings.rules.entries()) {
 			if (!currentRule.enabled) {
 				continue; // Skip disabled rules
 			}
@@ -789,7 +832,7 @@ export default class VirtualFooterPlugin extends Plugin {
 
 			if (isMatch) {
 				const contentText = await this._fetchContentForRule(currentRule);
-				allApplicable.push({ rule: currentRule, contentText });
+				allApplicable.push({ rule: currentRule, contentText, index });
 			}
 		}
 		return allApplicable;
@@ -931,6 +974,8 @@ export default class VirtualFooterPlugin extends Plugin {
 			footerText: loadedRule.footerText || '', // Retain name for compatibility
 			renderLocation: loadedRule.renderLocation || globalRenderLocation || DEFAULT_SETTINGS.rules[0].renderLocation,
 			recursive: loadedRule.recursive !== undefined ? loadedRule.recursive : true,
+			showInSeparateTab: loadedRule.showInSeparateTab || false,
+			sidebarTabName: loadedRule.sidebarTabName || '',
 		};
 
 		// Populate type-specific fields
@@ -999,6 +1044,15 @@ export default class VirtualFooterPlugin extends Plugin {
 		} else { // ContentSource.Text
 			delete rule.footerFilePath;
 		}
+
+		// Normalize sidebar-specific fields
+		if (rule.renderLocation === RenderLocation.Sidebar) {
+			rule.showInSeparateTab = typeof rule.showInSeparateTab === 'boolean' ? rule.showInSeparateTab : false;
+			rule.sidebarTabName = rule.sidebarTabName || '';
+		} else {
+			delete rule.showInSeparateTab;
+			delete rule.sidebarTabName;
+		}
 	}
 
 	/**
@@ -1008,16 +1062,17 @@ export default class VirtualFooterPlugin extends Plugin {
 		// Ensure all rules are normalized before saving
 		this.settings.rules.forEach(rule => this.normalizeRule(rule));
 		await this.saveData(this.settings);
+		this.registerDynamicViews(); // Re-register views in case names/rules changed
 		this.handleActiveViewChange(); // Refresh views to apply changes
 	}
 
-	async activateView() {
-		this.app.workspace.detachLeavesOfType(VIRTUAL_CONTENT_VIEW_TYPE);
+	async activateView(viewId: string) {
+		this.app.workspace.detachLeavesOfType(viewId);
 
 		const leaf = this.app.workspace.getRightLeaf(true);
 		if (leaf) {
 			await leaf.setViewState({
-				type: VIRTUAL_CONTENT_VIEW_TYPE,
+				type: viewId,
 				active: true,
 			});
 
@@ -1025,17 +1080,58 @@ export default class VirtualFooterPlugin extends Plugin {
 		}
 	}
 
-	private updateSidebarView() {
+	private activateAllSidebarViews() {
+		this.activateView(VIRTUAL_CONTENT_VIEW_TYPE);
+		this.settings.rules.forEach((rule, index) => {
+			if (rule.enabled && rule.renderLocation === RenderLocation.Sidebar && rule.showInSeparateTab) {
+				this.activateView(this.getSeparateViewId(index));
+			}
+		});
+	}
+
+	private updateAllSidebarViews() {
 		const leaves = this.app.workspace.getLeavesOfType(VIRTUAL_CONTENT_VIEW_TYPE);
 		for (const leaf of leaves) {
 			if (leaf.view instanceof VirtualContentView) {
 				leaf.view.update();
 			}
 		}
+		this.settings.rules.forEach((rule, index) => {
+			if (rule.renderLocation === RenderLocation.Sidebar && rule.showInSeparateTab) {
+				const viewId = this.getSeparateViewId(index);
+				const separateLeaves = this.app.workspace.getLeavesOfType(viewId);
+				for (const leaf of separateLeaves) {
+					if (leaf.view instanceof VirtualContentView) {
+						leaf.view.update();
+					}
+				}
+			}
+		});
 	}
 
 	public getLastSidebarContent(): { content: string, sourcePath: string } | null {
 		return this.lastSidebarContent;
+	}
+
+	public getSeparateTabContent(viewId: string): { content: string, sourcePath: string } | null {
+		return this.lastSeparateTabContents.get(viewId) || null;
+	}
+
+	private getSeparateViewId(ruleIndex: number): string {
+		return `${VIRTUAL_CONTENT_SEPARATE_VIEW_TYPE_PREFIX}${ruleIndex}`;
+	}
+
+	private registerDynamicViews() {
+		this.settings.rules.forEach((rule, index) => {
+			if (rule.renderLocation === RenderLocation.Sidebar && rule.showInSeparateTab) {
+				const viewId = this.getSeparateViewId(index);
+				const tabName = rule.sidebarTabName?.trim() ? `Virtual Content: ${rule.sidebarTabName}` : `Virtual Content: Rule ${index + 1}`;
+				this.registerView(
+					viewId,
+					(leaf) => new VirtualContentView(leaf, this, viewId, tabName, () => this.getSeparateTabContent(viewId))
+				);
+			}
+		});
 	}
 }
 
@@ -1434,8 +1530,37 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 				.setValue(rule.renderLocation || RenderLocation.Footer) // Default to Footer
 				.onChange(async (value: string) => {
 					rule.renderLocation = value as RenderLocation;
+					this.plugin.normalizeRule(rule);
 					await this.plugin.saveSettings();
+					this.display();
 				}));
+
+		// --- Sidebar-Specific Settings ---
+		if (rule.renderLocation === RenderLocation.Sidebar) {
+			new Setting(ruleContentContainer)
+				.setName('Show in separate tab')
+				.setDesc('If enabled, this content will appear in its own sidebar tab instead of being combined with other sidebar rules.')
+				.addToggle(toggle => toggle
+					.setValue(rule.showInSeparateTab!)
+					.onChange(async (value) => {
+						rule.showInSeparateTab = value;
+						await this.plugin.saveSettings();
+						this.display(); // Re-render to show/hide tab name setting
+					}));
+
+			if (rule.showInSeparateTab) {
+				new Setting(ruleContentContainer)
+					.setName('Sidebar tab name')
+					.setDesc('The name for the separate sidebar tab. If empty, a default name will be used.')
+					.addText(text => text
+						.setPlaceholder('e.g., Related Notes')
+						.setValue(rule.sidebarTabName || '')
+						.onChange(async (value) => {
+							rule.sidebarTabName = value;
+							await this.plugin.saveSettings();
+						}));
+			}
+		}
 		
 		// --- Rule Actions: Reorder and Delete ---
 		const ruleActionsSetting = new Setting(ruleContentContainer)
