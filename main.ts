@@ -1073,14 +1073,15 @@ export default class VirtualFooterPlugin extends Plugin {
 	 * @param rule The rule to normalize.
 	 */
 	public normalizeRule(rule: Rule): void {
+		// Create a copy of the rule to preserve original values during cleanup
+		const originalRule = { ...rule };
+
 		// Ensure basic fields have default values
 		rule.name = rule.name === undefined ? DEFAULT_SETTINGS.rules[0].name : rule.name;
 		rule.enabled = typeof rule.enabled === 'boolean' ? rule.enabled : DEFAULT_SETTINGS.rules[0].enabled!;
 		rule.type = rule.type || DEFAULT_SETTINGS.rules[0].type;
 
 		// Clean up all type-specific fields before re-populating
-		const conditions = rule.conditions; // Preserve conditions for multi-type
-		const multiConditionLogic = rule.multiConditionLogic;
 		delete rule.path;
 		delete rule.recursive;
 		delete rule.tag;
@@ -1090,37 +1091,37 @@ export default class VirtualFooterPlugin extends Plugin {
 		delete rule.conditions;
 		delete rule.multiConditionLogic;
 
-		// Normalize based on RuleType
+		// Normalize based on RuleType, using values from the original rule if they exist
 		if (rule.type === RuleType.Folder) {
-			rule.path = rule.path === undefined ? (DEFAULT_SETTINGS.rules[0].path || '') : rule.path;
+			rule.path = originalRule.path === undefined ? (DEFAULT_SETTINGS.rules[0].path || '') : originalRule.path;
 			// 'recursive' is always true if path is "" (all files)
-			rule.recursive = rule.path === "" ? true : (typeof rule.recursive === 'boolean' ? rule.recursive : true);
+			rule.recursive = rule.path === "" ? true : (typeof originalRule.recursive === 'boolean' ? originalRule.recursive : true);
 		} else if (rule.type === RuleType.Tag) {
-			rule.tag = rule.tag === undefined ? '' : rule.tag;
+			rule.tag = originalRule.tag === undefined ? '' : originalRule.tag;
+			rule.includeSubtags = typeof originalRule.includeSubtags === 'boolean' ? originalRule.includeSubtags : false;
 		} else if (rule.type === RuleType.Property) {
-			rule.propertyName = rule.propertyName === undefined ? '' : rule.propertyName;
-			rule.propertyValue = rule.propertyValue === undefined ? '' : rule.propertyValue;
+			rule.propertyName = originalRule.propertyName === undefined ? '' : originalRule.propertyName;
+			rule.propertyValue = originalRule.propertyValue === undefined ? '' : originalRule.propertyValue;
 		} else if (rule.type === RuleType.Multi) {
-			rule.conditions = Array.isArray(conditions) ? conditions : [];
-			rule.multiConditionLogic = multiConditionLogic === 'all' ? 'all' : 'any';
+			rule.conditions = Array.isArray(originalRule.conditions) ? originalRule.conditions : [];
+			rule.multiConditionLogic = originalRule.multiConditionLogic === 'all' ? 'all' : 'any';
 		}
 
 		// Normalize content source and related fields
-		// Normalize content source and related fields
-		rule.contentSource = rule.contentSource || DEFAULT_SETTINGS.rules[0].contentSource;
-		rule.footerText = rule.footerText || ''; // Retain name for compatibility
-		rule.renderLocation = rule.renderLocation || DEFAULT_SETTINGS.rules[0].renderLocation;
+		rule.contentSource = originalRule.contentSource || DEFAULT_SETTINGS.rules[0].contentSource;
+		rule.footerText = originalRule.footerText || ''; // Retain name for compatibility
+		rule.renderLocation = originalRule.renderLocation || DEFAULT_SETTINGS.rules[0].renderLocation;
 
 		if (rule.contentSource === ContentSource.File) {
-			rule.footerFilePath = rule.footerFilePath || ''; // Retain name for compatibility
+			rule.footerFilePath = originalRule.footerFilePath || ''; // Retain name for compatibility
 		} else { // ContentSource.Text
 			delete rule.footerFilePath;
 		}
 
 		// Normalize sidebar-specific fields
 		if (rule.renderLocation === RenderLocation.Sidebar) {
-			rule.showInSeparateTab = typeof rule.showInSeparateTab === 'boolean' ? rule.showInSeparateTab : false;
-			rule.sidebarTabName = rule.sidebarTabName || '';
+			rule.showInSeparateTab = typeof originalRule.showInSeparateTab === 'boolean' ? originalRule.showInSeparateTab : false;
+			rule.sidebarTabName = originalRule.sidebarTabName || '';
 		} else {
 			delete rule.showInSeparateTab;
 			delete rule.sidebarTabName;
