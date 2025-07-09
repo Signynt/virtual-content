@@ -8,7 +8,9 @@ This is especially useful if you have many files with the same dataview block. I
 - Works with Dataview, Datacore and native Obisidan Bases
 - Lets you define rules using folderes, tags and properties
 	- Rules can be set to include or exclude subfolders and subtags (recursive matching)
+	- Multi-condition rules are possible, allowing you to define multiple conditions for one rule (using AND/OR)
 - Lets you select wether the "virtual content" gets added as a footer (end of file), a header (below properties) or in the sidebar
+	- Lets you choose if all sidebar "virtual content" gets added to the same sidebar tab, or if it should be shown in it's own tab
 - Allows for "virtual content" to be defined in the plugin settings, or in a markdown file
 - Rules can be enabled or disabled from the plugin settings
 
