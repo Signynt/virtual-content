@@ -82,8 +82,10 @@ interface Rule {
 	propertyName?: string;
 	/** For 'property' type: the value the frontmatter property should have. */
 	propertyValue?: string;
-	/** For 'multi' type: an array of sub-conditions. The rule matches if ANY of these conditions are met. */
+	/** For 'multi' type: an array of sub-conditions. */
 	conditions?: SubCondition[];
+	/** For 'multi' type: specifies whether ANY or ALL conditions must be met. Defaults to 'any'. */
+	multiConditionLogic?: 'any' | 'all';
 	/** The source from which to get the content (direct text or a file). */
 	contentSource: ContentSource;
 	/** Direct text content if contentSource is 'text'. */
@@ -132,6 +134,7 @@ const DEFAULT_SETTINGS: VirtualFooterSettings = {
 		renderLocation: RenderLocation.Footer,
 		showInSeparateTab: false,
 		sidebarTabName: '',
+		multiConditionLogic: 'any',
 	}],
 	refreshOnFileOpen: false, // Default to false
 };
@@ -818,24 +821,23 @@ export default class VirtualFooterPlugin extends Plugin {
 			// --- Match by Multi ---
 			else if (currentRule.type === RuleType.Multi) {
 				if (currentRule.conditions && currentRule.conditions.length > 0) {
-					// Rule matches if ANY of the sub-conditions match (OR logic)
-					for (const condition of currentRule.conditions) {
+					const checkCondition = (condition: SubCondition): boolean => {
 						if (condition.type === 'folder') {
-							if (this._checkFolderMatch(file, condition)) {
-								isMatch = true;
-								break;
-							}
+							return this._checkFolderMatch(file, condition);
 						} else if (condition.type === 'tag') {
-							if (this._checkTagMatch(fileTags, condition)) {
-								isMatch = true;
-								break;
-							}
+							return this._checkTagMatch(fileTags, condition);
 						} else if (condition.type === 'property') {
-							if (this._checkPropertyMatch(fileCache?.frontmatter, condition)) {
-								isMatch = true;
-								break;
-							}
+							return this._checkPropertyMatch(fileCache?.frontmatter, condition);
 						}
+						return false;
+					};
+
+					if (currentRule.multiConditionLogic === 'all') {
+						// ALL (AND) logic: every condition must be true
+						isMatch = currentRule.conditions.every(checkCondition);
+					} else {
+						// ANY (OR) logic: at least one condition must be true
+						isMatch = currentRule.conditions.some(checkCondition);
 					}
 				}
 			}
@@ -1041,6 +1043,7 @@ export default class VirtualFooterPlugin extends Plugin {
 			recursive: loadedRule.recursive !== undefined ? loadedRule.recursive : true,
 			showInSeparateTab: loadedRule.showInSeparateTab || false,
 			sidebarTabName: loadedRule.sidebarTabName || '',
+			multiConditionLogic: loadedRule.multiConditionLogic || 'any',
 		};
 
 		// Populate type-specific fields
@@ -1077,6 +1080,7 @@ export default class VirtualFooterPlugin extends Plugin {
 
 		// Clean up all type-specific fields before re-populating
 		const conditions = rule.conditions; // Preserve conditions for multi-type
+		const multiConditionLogic = rule.multiConditionLogic;
 		delete rule.path;
 		delete rule.recursive;
 		delete rule.tag;
@@ -1084,6 +1088,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		delete rule.propertyName;
 		delete rule.propertyValue;
 		delete rule.conditions;
+		delete rule.multiConditionLogic;
 
 		// Normalize based on RuleType
 		if (rule.type === RuleType.Folder) {
@@ -1097,6 +1102,7 @@ export default class VirtualFooterPlugin extends Plugin {
 			rule.propertyValue = rule.propertyValue === undefined ? '' : rule.propertyValue;
 		} else if (rule.type === RuleType.Multi) {
 			rule.conditions = Array.isArray(conditions) ? conditions : [];
+			rule.multiConditionLogic = multiConditionLogic === 'all' ? 'all' : 'any';
 		}
 
 		// Normalize content source and related fields
@@ -1702,8 +1708,20 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 
 	private renderMultiConditionControls(rule: Rule, containerEl: HTMLElement): void {
 		new Setting(containerEl)
+			.setName('Condition logic')
+			.setDesc('Choose whether any condition or all conditions must be met.')
+			.addDropdown(dropdown => dropdown
+				.addOption('any', 'Any condition')
+				.addOption('all', 'All conditions')
+				.setValue(rule.multiConditionLogic || 'any')
+				.onChange(async (value: 'any' | 'all') => {
+					rule.multiConditionLogic = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
 			.setName('Conditions')
-			.setDesc('This rule will apply if any of the following conditions are met.');
+			.setDesc('This rule will apply if the selected logic is met by the following conditions.');
 
 		const conditionsContainer = containerEl.createDiv('virtual-footer-conditions-container');
 		rule.conditions?.forEach((condition, index) => {
