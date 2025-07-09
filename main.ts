@@ -20,6 +20,7 @@ enum RuleType {
 	Folder = 'folder',
 	Tag = 'tag',
 	Property = 'property',
+	Multi = 'multi',
 }
 
 /** Defines the source of the content for a rule (e.g., direct text input or a markdown file). */
@@ -36,6 +37,26 @@ enum RenderLocation {
 }
 
 // --- Interfaces ---
+
+/**
+ * Represents a single condition for a 'Multi' rule type.
+ */
+interface SubCondition {
+	/** The type of condition (folder, tag, or property). */
+	type: 'folder' | 'tag' | 'property';
+	/** For 'folder' type: path to the folder. */
+	path?: string;
+	/** For 'folder' type: whether to match subfolders. */
+	recursive?: boolean;
+	/** For 'tag' type: the tag name (without '#'). */
+	tag?: string;
+	/** For 'tag' type: whether to match subtags. */
+	includeSubtags?: boolean;
+	/** For 'property' type: the name of the frontmatter property. */
+	propertyName?: string;
+	/** For 'property' type: the value the frontmatter property should have. */
+	propertyValue?: string;
+}
 
 /**
  * Represents a rule for injecting dynamic content into Markdown views.
@@ -61,6 +82,8 @@ interface Rule {
 	propertyName?: string;
 	/** For 'property' type: the value the frontmatter property should have. */
 	propertyValue?: string;
+	/** For 'multi' type: an array of sub-conditions. The rule matches if ANY of these conditions are met. */
+	conditions?: SubCondition[];
 	/** The source from which to get the content (direct text or a file). */
 	contentSource: ContentSource;
 	/** Direct text content if contentSource is 'text'. */
@@ -767,7 +790,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		const fileCache = this.app.metadataCache.getFileCache(file);
 
 		// Pre-fetch tags if any tag-based rules exist and are enabled
-		const hasEnabledTagRule = this.settings.rules.some(r => r.enabled && r.type === RuleType.Tag);
+		const hasEnabledTagRule = this.settings.rules.some(r => r.enabled && (r.type === RuleType.Tag || r.type === RuleType.Multi));
 		if (hasEnabledTagRule && fileCache) {
 			const allTagsInFileWithHash = getAllTags(fileCache);
 			fileTags = allTagsInFileWithHash ? allTagsInFileWithHash.map(tag => tag.substring(1)) : [];
@@ -779,53 +802,40 @@ export default class VirtualFooterPlugin extends Plugin {
 			}
 
 			let isMatch = false;
-			const ruleRecursive = currentRule.recursive === undefined ? true : currentRule.recursive;
 
 			// --- Match by Folder ---
-			if (currentRule.type === RuleType.Folder && currentRule.path !== undefined) {
-				if (currentRule.path === "") { // Matches all files
-					isMatch = true;
-				} else if (currentRule.path === "/") { // Matches root folder
-					isMatch = ruleRecursive ? true : (file.parent?.isRoot() ?? false);
-				} else {
-					let normalizedRuleFolderPath = currentRule.path.endsWith('/') ? currentRule.path.slice(0, -1) : currentRule.path;
-					if (ruleRecursive) {
-						isMatch = file.path.startsWith(normalizedRuleFolderPath + '/');
-					} else {
-						isMatch = file.parent?.path === normalizedRuleFolderPath;
-					}
-				}
+			if (currentRule.type === RuleType.Folder) {
+				isMatch = this._checkFolderMatch(file, currentRule);
+			}
 			// --- Match by Tag ---
-			} else if (currentRule.type === RuleType.Tag && currentRule.tag && fileTags) {
-				const ruleTag = currentRule.tag;
-				const includeSubtags = currentRule.includeSubtags ?? false;
-				for (const fileTag of fileTags) {
-					if (includeSubtags) {
-						if (fileTag === ruleTag || fileTag.startsWith(ruleTag + '/')) {
-							isMatch = true;
-							break;
-						}
-					} else {
-						if (fileTag === ruleTag) {
-							isMatch = true;
-							break;
-						}
-					}
-				}
+			else if (currentRule.type === RuleType.Tag) {
+				isMatch = this._checkTagMatch(fileTags, currentRule);
+			}
 			// --- Match by Property ---
-			} else if (currentRule.type === RuleType.Property && currentRule.propertyName && fileCache?.frontmatter) {
-				const propertyKey = currentRule.propertyName;
-				const expectedPropertyValue = currentRule.propertyValue;
-				const actualPropertyValue = fileCache.frontmatter[propertyKey];
-
-				if (actualPropertyValue !== undefined && actualPropertyValue !== null) {
-					if (typeof actualPropertyValue === 'string') {
-						isMatch = actualPropertyValue === expectedPropertyValue;
-					} else if (Array.isArray(actualPropertyValue)) {
-						// For arrays, check if the expected value is one of the items
-						isMatch = actualPropertyValue.map(String).includes(expectedPropertyValue!);
-					} else if (typeof actualPropertyValue === 'number' || typeof actualPropertyValue === 'boolean') {
-						isMatch = String(actualPropertyValue) === expectedPropertyValue;
+			else if (currentRule.type === RuleType.Property) {
+				isMatch = this._checkPropertyMatch(fileCache?.frontmatter, currentRule);
+			}
+			// --- Match by Multi ---
+			else if (currentRule.type === RuleType.Multi) {
+				if (currentRule.conditions && currentRule.conditions.length > 0) {
+					// Rule matches if ANY of the sub-conditions match (OR logic)
+					for (const condition of currentRule.conditions) {
+						if (condition.type === 'folder') {
+							if (this._checkFolderMatch(file, condition)) {
+								isMatch = true;
+								break;
+							}
+						} else if (condition.type === 'tag') {
+							if (this._checkTagMatch(fileTags, condition)) {
+								isMatch = true;
+								break;
+							}
+						} else if (condition.type === 'property') {
+							if (this._checkPropertyMatch(fileCache?.frontmatter, condition)) {
+								isMatch = true;
+								break;
+							}
+						}
 					}
 				}
 			}
@@ -836,6 +846,61 @@ export default class VirtualFooterPlugin extends Plugin {
 			}
 		}
 		return allApplicable;
+	}
+
+	private _checkFolderMatch(file: TFile, rule: { path?: string, recursive?: boolean }): boolean {
+		if (rule.path === undefined) return false;
+		const ruleRecursive = rule.recursive === undefined ? true : rule.recursive;
+
+		if (rule.path === "") { // Matches all files
+			return true;
+		} else if (rule.path === "/") { // Matches root folder
+			return ruleRecursive ? true : (file.parent?.isRoot() ?? false);
+		} else {
+			let normalizedRuleFolderPath = rule.path.endsWith('/') ? rule.path.slice(0, -1) : rule.path;
+			if (ruleRecursive) {
+				return file.path.startsWith(normalizedRuleFolderPath + '/');
+			} else {
+				return file.parent?.path === normalizedRuleFolderPath;
+			}
+		}
+	}
+
+	private _checkTagMatch(fileTags: string[] | null, rule: { tag?: string, includeSubtags?: boolean }): boolean {
+		if (!rule.tag || !fileTags) return false;
+		const ruleTag = rule.tag;
+		const includeSubtags = rule.includeSubtags ?? false;
+		for (const fileTag of fileTags) {
+			if (includeSubtags) {
+				if (fileTag === ruleTag || fileTag.startsWith(ruleTag + '/')) {
+					return true;
+				}
+			} else {
+				if (fileTag === ruleTag) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	private _checkPropertyMatch(frontmatter: any, rule: { propertyName?: string, propertyValue?: string }): boolean {
+		if (!rule.propertyName || !frontmatter) return false;
+		const propertyKey = rule.propertyName;
+		const expectedPropertyValue = rule.propertyValue;
+		const actualPropertyValue = frontmatter[propertyKey];
+
+		if (actualPropertyValue !== undefined && actualPropertyValue !== null) {
+			if (typeof actualPropertyValue === 'string') {
+				return actualPropertyValue === expectedPropertyValue;
+			} else if (Array.isArray(actualPropertyValue)) {
+				// For arrays, check if the expected value is one of the items
+				return actualPropertyValue.map(String).includes(expectedPropertyValue!);
+			} else if (typeof actualPropertyValue === 'number' || typeof actualPropertyValue === 'boolean') {
+				return String(actualPropertyValue) === expectedPropertyValue;
+			}
+		}
+		return false;
 	}
 
 	/**
@@ -988,6 +1053,8 @@ export default class VirtualFooterPlugin extends Plugin {
 		} else if (migratedRule.type === RuleType.Property) {
 			migratedRule.propertyName = loadedRule.propertyName || '';
 			migratedRule.propertyValue = loadedRule.propertyValue || '';
+		} else if (migratedRule.type === RuleType.Multi) {
+			migratedRule.conditions = loadedRule.conditions || [];
 		}
 
 		// Populate content source-specific fields
@@ -1008,32 +1075,31 @@ export default class VirtualFooterPlugin extends Plugin {
 		rule.enabled = typeof rule.enabled === 'boolean' ? rule.enabled : DEFAULT_SETTINGS.rules[0].enabled!;
 		rule.type = rule.type || DEFAULT_SETTINGS.rules[0].type;
 
+		// Clean up all type-specific fields before re-populating
+		const conditions = rule.conditions; // Preserve conditions for multi-type
+		delete rule.path;
+		delete rule.recursive;
+		delete rule.tag;
+		delete rule.includeSubtags;
+		delete rule.propertyName;
+		delete rule.propertyValue;
+		delete rule.conditions;
+
 		// Normalize based on RuleType
 		if (rule.type === RuleType.Folder) {
 			rule.path = rule.path === undefined ? (DEFAULT_SETTINGS.rules[0].path || '') : rule.path;
 			// 'recursive' is always true if path is "" (all files)
 			rule.recursive = rule.path === "" ? true : (typeof rule.recursive === 'boolean' ? rule.recursive : true);
-			// Delete fields not applicable to Folder type
-			delete rule.tag;
-			delete rule.includeSubtags;
-			delete rule.propertyName;
-			delete rule.propertyValue;
 		} else if (rule.type === RuleType.Tag) {
 			rule.tag = rule.tag === undefined ? '' : rule.tag;
-			rule.includeSubtags = typeof rule.includeSubtags === 'boolean' ? rule.includeSubtags : false;
-			delete rule.path;
-			delete rule.recursive;
-			delete rule.propertyName;
-			delete rule.propertyValue;
 		} else if (rule.type === RuleType.Property) {
 			rule.propertyName = rule.propertyName === undefined ? '' : rule.propertyName;
 			rule.propertyValue = rule.propertyValue === undefined ? '' : rule.propertyValue;
-			delete rule.path;
-			delete rule.recursive;
-			delete rule.tag;
-			delete rule.includeSubtags;
+		} else if (rule.type === RuleType.Multi) {
+			rule.conditions = Array.isArray(conditions) ? conditions : [];
 		}
 
+		// Normalize content source and related fields
 		// Normalize content source and related fields
 		rule.contentSource = rule.contentSource || DEFAULT_SETTINGS.rules[0].contentSource;
 		rule.footerText = rule.footerText || ''; // Retain name for compatibility
@@ -1363,14 +1429,22 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 		// --- Rule Type Setting ---
 		new Setting(ruleContentContainer)
 			.setName('Rule type')
-			.setDesc('Apply this rule based on folder, tag, or property.')
+			.setDesc('Apply this rule based on folder, tag, property, or a combination.')
 			.addDropdown(dropdown => dropdown
 				.addOption(RuleType.Folder, 'Folder')
 				.addOption(RuleType.Tag, 'Tag')
 				.addOption(RuleType.Property, 'Property')
+				.addOption(RuleType.Multi, 'Multi-condition')
 				.setValue(rule.type)
 				.onChange(async (value: string) => {
 					rule.type = value as RuleType;
+					// When switching to Multi, we might want to convert the old rule
+					if (rule.type === RuleType.Multi) {
+						const oldRule = { ...rule };
+						rule.conditions = [];
+						// This logic is complex, so for now we just start with a clean slate.
+						// A more advanced version could auto-convert the previous simple rule.
+					}
 					this.plugin.normalizeRule(rule); // Re-normalize for type-specific fields
 					await this.plugin.saveSettings();
 					this.display(); // Re-render to show/hide type-specific settings
@@ -1472,6 +1546,8 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 						rule.propertyValue = value;
 						await this.plugin.saveSettings();
 					}));
+		} else if (rule.type === RuleType.Multi) {
+			this.renderMultiConditionControls(rule, ruleContentContainer);
 		}
 
 		// --- Content Source Settings ---
@@ -1622,5 +1698,131 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 				await this.plugin.saveSettings();
 				this.display(); // Re-render to reflect deletion and update indices
 			}));
+	}
+
+	private renderMultiConditionControls(rule: Rule, containerEl: HTMLElement): void {
+		new Setting(containerEl)
+			.setName('Conditions')
+			.setDesc('This rule will apply if ANY of the following conditions are met (OR logic).');
+
+		const conditionsContainer = containerEl.createDiv('virtual-footer-conditions-container');
+		rule.conditions?.forEach((condition, index) => {
+			this.renderSubConditionControls(condition, index, rule, conditionsContainer);
+		});
+
+		new Setting(containerEl)
+			.addButton(button => button
+				.setButtonText('Add condition')
+				.setCta()
+				.onClick(async () => {
+					rule.conditions = rule.conditions || [];
+					rule.conditions.push({ type: 'folder', path: '', recursive: true });
+					await this.plugin.saveSettings();
+					this.display();
+				}));
+	}
+
+	private renderSubConditionControls(condition: SubCondition, index: number, rule: Rule, containerEl: HTMLElement): void {
+		const conditionDiv = containerEl.createDiv('virtual-footer-sub-condition-item');
+
+		const setting = new Setting(conditionDiv)
+			.addDropdown(dropdown => dropdown
+				.addOption('folder', 'Folder')
+				.addOption('tag', 'Tag')
+				.addOption('property', 'Property')
+				.setValue(condition.type)
+				.onChange(async (value: 'folder' | 'tag' | 'property') => {
+					condition.type = value;
+					// Reset fields when type changes
+					delete condition.path;
+					delete condition.recursive;
+					delete condition.tag;
+					delete condition.includeSubtags;
+					delete condition.propertyName;
+					delete condition.propertyValue;
+					await this.plugin.saveSettings();
+					this.display();
+				})
+			);
+
+		if (condition.type === 'folder') {
+			setting.addText(text => {
+				text.setPlaceholder('Folder path')
+					.setValue(condition.path || '')
+					.onChange(async (value) => {
+						condition.path = value;
+						await this.plugin.saveSettings();
+					});
+				new MultiSuggest(text.inputEl, this.getAvailableFolderPaths(), (selected) => {
+					condition.path = selected;
+					text.setValue(selected);
+					this.plugin.saveSettings();
+				}, this.plugin.app);
+			});
+			setting.addToggle(toggle => toggle
+				.setTooltip('Include subfolders')
+				.setValue(condition.recursive ?? true)
+				.onChange(async (value) => {
+					condition.recursive = value;
+					await this.plugin.saveSettings();
+				})
+			);
+		} else if (condition.type === 'tag') {
+			setting.addText(text => {
+				text.setPlaceholder('Tag value (no #)')
+					.setValue(condition.tag || '')
+					.onChange(async (value) => {
+						condition.tag = value.startsWith('#') ? value.substring(1) : value;
+						await this.plugin.saveSettings();
+					});
+				new MultiSuggest(text.inputEl, this.getAvailableTags(), (selected) => {
+					const normalized = selected.startsWith('#') ? selected.substring(1) : selected;
+					condition.tag = normalized;
+					text.setValue(normalized);
+					this.plugin.saveSettings();
+				}, this.plugin.app);
+			});
+			setting.addToggle(toggle => toggle
+				.setTooltip('Include subtags')
+				.setValue(condition.includeSubtags ?? false)
+				.onChange(async (value) => {
+					condition.includeSubtags = value;
+					await this.plugin.saveSettings();
+				})
+			);
+		} else if (condition.type === 'property') {
+			setting.addText(text => {
+				text.setPlaceholder('Property name')
+					.setValue(condition.propertyName || '')
+					.onChange(async (value) => {
+						condition.propertyName = value;
+						await this.plugin.saveSettings();
+					});
+				new MultiSuggest(text.inputEl, this.getAvailablePropertyNames(), (selected) => {
+					condition.propertyName = selected;
+					text.setValue(selected);
+					this.plugin.saveSettings();
+				}, this.plugin.app);
+			});
+			setting.addText(text => text
+				.setPlaceholder('Property value')
+				.setValue(condition.propertyValue || '')
+				.onChange(async (value) => {
+					condition.propertyValue = value;
+					await this.plugin.saveSettings();
+				})
+			);
+		}
+
+		setting.addButton(button => button
+			.setIcon('trash')
+			.setTooltip('Delete condition')
+			.setWarning()
+			.onClick(async () => {
+				rule.conditions?.splice(index, 1);
+				await this.plugin.saveSettings();
+				this.display();
+			})
+		);
 	}
 }
