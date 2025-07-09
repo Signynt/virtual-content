@@ -1703,7 +1703,7 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 	private renderMultiConditionControls(rule: Rule, containerEl: HTMLElement): void {
 		new Setting(containerEl)
 			.setName('Conditions')
-			.setDesc('This rule will apply if ANY of the following conditions are met (OR logic).');
+			.setDesc('This rule will apply if any of the following conditions are met.');
 
 		const conditionsContainer = containerEl.createDiv('virtual-footer-conditions-container');
 		rule.conditions?.forEach((condition, index) => {
