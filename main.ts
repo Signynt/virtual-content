@@ -109,6 +109,8 @@ interface VirtualFooterSettings {
 	rules: Rule[];
 	/** Whether to refresh the view on file open. Defaults to false. */
 	refreshOnFileOpen?: boolean;
+	/** Whether to render content in source mode. Defaults to false. */
+	renderInSourceMode?: boolean;
 }
 
 /**
@@ -138,6 +140,7 @@ const DEFAULT_SETTINGS: VirtualFooterSettings = {
 		multiConditionLogic: 'any',
 	}],
 	refreshOnFileOpen: false, // Default to false
+	renderInSourceMode: false, // Default to false
 };
 
 // CSS Classes for styling and identifying plugin-generated elements
@@ -467,8 +470,17 @@ export default class VirtualFooterPlugin extends Plugin {
 		this.lastSidebarContent = { content: combinedSidebarText, sourcePath: view.file.path };
 		this.updateAllSidebarViews();
 
+		// Determine if we should render based on view mode and settings
+		const isLivePreview = viewState.mode === 'source' && !viewState.source;
+		const isSourceMode = viewState.mode === 'source' && viewState.source;
+		const isReadingMode = viewState.mode === 'preview';
+
+		const shouldRenderInSource = isSourceMode && this.settings.renderInSourceMode;
+		const shouldRenderInLivePreview = isLivePreview;
+		const shouldRenderInReading = isReadingMode;
+
 		// Apply specific styles for Live Preview footers if needed
-		if (viewState.mode === 'source' && !viewState.source && hasFooterRule) { // Live Preview mode
+		if ((shouldRenderInLivePreview || shouldRenderInSource) && hasFooterRule) {
 			this.applyLivePreviewFooterStyles(view);
 		}
 
@@ -476,17 +488,17 @@ export default class VirtualFooterPlugin extends Plugin {
 		let pendingFooterDiv: HTMLElementWithComponent | null = null;
 
 		// Render and inject content based on view mode
-		if (viewState.mode === 'preview' || (viewState.mode === 'source' && !viewState.source)) { // Reading or Live Preview
+		if (shouldRenderInReading || shouldRenderInLivePreview || shouldRenderInSource) {
 			if (combinedHeaderText.trim()) {
 				const result = await this.renderAndInjectGroupedContent(view, combinedHeaderText, RenderLocation.Header);
 				// If in preview mode and injection is deferred, store the element
-				if (result && viewState.mode === 'preview') {
+				if (result && shouldRenderInReading) {
 					pendingHeaderDiv = result;
 				}
 			}
 			if (combinedFooterText.trim()) {
 				const result = await this.renderAndInjectGroupedContent(view, combinedFooterText, RenderLocation.Footer);
-				if (result && viewState.mode === 'preview') {
+				if (result && shouldRenderInReading) {
 					pendingFooterDiv = result;
 				}
 			}
@@ -558,7 +570,7 @@ export default class VirtualFooterPlugin extends Plugin {
 				targetParent.appendChild(groupDiv);
 				injectionSuccessful = true;
 			}
-		} else if (viewState.mode === 'source' && !viewState.source) { // Live Preview mode
+		} else if (viewState.mode === 'source') { // Live Preview or Source mode
 			if (isRenderInHeader) {
 				const cmContentContainer = view.containerEl.querySelector<HTMLElement>(SELECTOR_LIVE_PREVIEW_CONTENT_CONTAINER);
 				if (cmContentContainer?.parentElement) {
@@ -571,7 +583,7 @@ export default class VirtualFooterPlugin extends Plugin {
 					cmContentContainer.parentElement.insertBefore(groupDiv, cmContentContainer);
 					injectionSuccessful = true;
 				}
-			} else { // Footer in Live Preview
+			} else { // Footer in Live Preview or Source mode
 				const targetParent = view.containerEl.querySelector<HTMLElement>(SELECTOR_EDITOR_SIZER);
 				if (targetParent) {
 					// Ensure idempotency: remove existing footer
@@ -987,8 +999,10 @@ export default class VirtualFooterPlugin extends Plugin {
 			if (typeof loadedData.refreshOnFileOpen === 'boolean') {
 				this.settings.refreshOnFileOpen = loadedData.refreshOnFileOpen;
 			}
-			// If loadedData.refreshOnFileOpen is undefined, this.settings.refreshOnFileOpen
-			// will retain the value from DEFAULT_SETTINGS due to the initial deep copy.
+			// Load the new renderInSourceMode setting if it exists
+			if (typeof loadedData.renderInSourceMode === 'boolean') {
+				this.settings.renderInSourceMode = loadedData.renderInSourceMode;
+			}
 		}
 
 		// Ensure there's at least one rule, and all rules are normalized
@@ -1000,9 +1014,12 @@ export default class VirtualFooterPlugin extends Plugin {
 			// Normalize all existing rules
 			this.settings.rules.forEach(rule => this.normalizeRule(rule));
 		}
-		// Ensure refreshOnFileOpen is definitely a boolean (it should be by now)
+		// Ensure global settings are definitely booleans
 		if (typeof this.settings.refreshOnFileOpen !== 'boolean') {
 			this.settings.refreshOnFileOpen = DEFAULT_SETTINGS.refreshOnFileOpen!;
+		}
+		if (typeof this.settings.renderInSourceMode !== 'boolean') {
+			this.settings.renderInSourceMode = DEFAULT_SETTINGS.renderInSourceMode!;
 		}
 	}
 
@@ -1320,6 +1337,16 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 		containerEl.createEl('p', { text: 'Define rules to dynamically add content to the header or footer of notes based on their folder, tags, or properties.' });
 
 		// --- General Settings Section ---
+		new Setting(containerEl)
+			.setName('Render in source mode')
+			.setDesc('If enabled, virtual content will be rendered in source mode. By default, content only appears in Live Preview and Reading modes.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.renderInSourceMode!)
+				.onChange(async (value) => {
+					this.plugin.settings.renderInSourceMode = value;
+					await this.plugin.saveSettings();
+				}));
+
 		new Setting(containerEl)
 			.setName('Refresh on focus change')
 			.setDesc('If enabled, virtual content will refresh when switching files. This may cause a slight flicker but is useful if you frequently change the text of virtual content and need immediate updates. If disabled the virtual content will be updated on file open and view change (editing/reading view). To prevent virtual content in the sidebar disappearing when clicking out of a note, it will always keep the last notes virtual content open, which means new tabs will show the virtual content of the last used note. Disabled by default.')
