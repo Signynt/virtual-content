@@ -1,4 +1,5 @@
-# Virtual Footer
+# Virtual Content
+> Previously known as "Virtual Footer"
 
 Set rules to add markdown text to the bottom or top of files based on rules. This text get's rendered normally, including dataview blocks or Obsidian Bases. Your notes don't get modified or changed, the given markdown text is simply rendered "virtually". Rules can be applied to folders, tags or properties. The content to be included can be entered directly in the plugin settings, or come from a file in your vault.
 
@@ -38,10 +39,10 @@ I can do this with as many folders as I like.
 ![image](https://github.com/user-attachments/assets/1caa8991-eec1-42a2-96da-ad5526acbc36)
 
 ### Customizable backlinks
-Some users use Virtual Footer to sort their backlinks based on folder or tag.
+Some users use Virtual Content to sort their backlinks based on folder or tag.
 
 ### Displaying tags used in a file
-Other users use Virtual Footer at the top of a file to show tags used in the body of their notes. Check out [this issue](https://github.com/Signynt/virtual-footer/issues/5#issuecomment-2919648582) for examples!
+Other users use Virtual Content at the top of a file to show tags used in the body of their notes. Check out [this issue](https://github.com/Signynt/virtual-content/issues/5#issuecomment-2919648582) for examples!
 
 ### Displaying related notes in your daily note
 I use this dataviewjs to display notes which were created, modified on that day or reference my daily note.
@@ -110,7 +111,7 @@ if (relatedFiles.length > 0) {
 `````
 
 ### Displaying dataview in the sidebar
-You can also use Virtual Footer to display dataview (or anything else) in the sidebar. This is useful if you want to see the results of a dataview query without having to scroll to the bottom of the file.
+You can also use Virtual Content to display dataview (or anything else) in the sidebar. This is useful if you want to see the results of a dataview query without having to scroll to the bottom of the file.
 Just select the "Sidebar" option in the settings, and use the "Open virtual content in sidebar" command.
 
 ![Untitled](https://github.com/user-attachments/assets/0fa7067a-596e-422b-b676-3f435fa1d49b)
