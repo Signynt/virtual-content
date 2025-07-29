@@ -111,6 +111,8 @@ interface VirtualFooterSettings {
 	refreshOnFileOpen?: boolean;
 	/** Whether to render content in source mode. Defaults to false. */
 	renderInSourceMode?: boolean;
+	/** Whether to render footer content above embedded backlinks. Defaults to false. */
+	renderAboveBacklinks?: boolean;
 }
 
 /**
@@ -141,6 +143,7 @@ const DEFAULT_SETTINGS: VirtualFooterSettings = {
 	}],
 	refreshOnFileOpen: false, // Default to false
 	renderInSourceMode: false, // Default to false
+	renderAboveBacklinks: false, // Default to false
 };
 
 // CSS Classes for styling and identifying plugin-generated elements
@@ -151,6 +154,7 @@ const CSS_HEADER_RENDERED_CONTENT = 'virtual-footer-header-rendered-content';
 const CSS_FOOTER_RENDERED_CONTENT = 'virtual-footer-footer-rendered-content';
 const CSS_VIRTUAL_FOOTER_CM_PADDING = 'virtual-footer-cm-padding'; // For CodeMirror live preview footer spacing
 const CSS_VIRTUAL_FOOTER_REMOVE_FLEX = 'virtual-footer-remove-flex'; // For CodeMirror live preview footer layout
+const CSS_ABOVE_BACKLINKS = 'virtual-footer-above-backlinks'; // For removing min-height when above backlinks
 
 // DOM Selectors for targeting elements in Obsidian's interface
 const SELECTOR_EDITOR_CONTENT_AREA = '.cm-editor .cm-content';
@@ -159,6 +163,7 @@ const SELECTOR_LIVE_PREVIEW_CONTENT_CONTAINER = '.cm-contentContainer';
 const SELECTOR_EDITOR_SIZER = '.cm-sizer'; // Target for live preview footer injection
 const SELECTOR_PREVIEW_HEADER_AREA = '.mod-header.mod-ui'; // Target for reading mode header injection
 const SELECTOR_PREVIEW_FOOTER_AREA = '.mod-footer'; // Target for reading mode footer injection
+const SELECTOR_EMBEDDED_BACKLINKS = '.embedded-backlinks'; // Target for positioning above backlinks
 
 const VIRTUAL_CONTENT_VIEW_TYPE = 'virtual-content-view';
 const VIRTUAL_CONTENT_SEPARATE_VIEW_TYPE_PREFIX = 'virtual-content-separate-view-';
@@ -542,6 +547,11 @@ export default class VirtualFooterPlugin extends Plugin {
 			isRenderInHeader ? CSS_HEADER_RENDERED_CONTENT : CSS_FOOTER_RENDERED_CONTENT
 		);
 
+		// Add the above-backlinks class for footer content when the setting is enabled
+		if (!isRenderInHeader && this.settings.renderAboveBacklinks) {
+			groupDiv.classList.add(CSS_ABOVE_BACKLINKS);
+		}
+
 		// Create and manage an Obsidian Component for the lifecycle of this content
 		const component = new Component();
 		component.load();
@@ -556,9 +566,21 @@ export default class VirtualFooterPlugin extends Plugin {
 		// Inject based on view mode and render location
 		if (viewState.mode === 'preview') { // Reading mode
 			const previewContentParent = view.previewMode.containerEl;
-			const targetParent = previewContentParent.querySelector<HTMLElement>(
-				isRenderInHeader ? SELECTOR_PREVIEW_HEADER_AREA : SELECTOR_PREVIEW_FOOTER_AREA
-			);
+			let targetParent: HTMLElement | null = null;
+			
+			if (isRenderInHeader) {
+				targetParent = previewContentParent.querySelector<HTMLElement>(SELECTOR_PREVIEW_HEADER_AREA);
+			} else { // Footer
+				if (this.settings.renderAboveBacklinks) {
+					// Try to find embedded backlinks first
+					targetParent = previewContentParent.querySelector<HTMLElement>(SELECTOR_EMBEDDED_BACKLINKS);
+				}
+				// If no backlinks or renderAboveBacklinks is false, use regular footer
+				if (!targetParent) {
+					targetParent = previewContentParent.querySelector<HTMLElement>(SELECTOR_PREVIEW_FOOTER_AREA);
+				}
+			}
+			
 			if (targetParent) {
 				// Ensure idempotency: remove any existing content of this type before adding new
 				const classToRemove = isRenderInHeader ? CSS_HEADER_GROUP_ELEMENT : CSS_FOOTER_GROUP_ELEMENT;
@@ -567,7 +589,13 @@ export default class VirtualFooterPlugin extends Plugin {
 					holder.component?.unload();
 					el.remove();
 				});
-				targetParent.appendChild(groupDiv);
+				
+				if (isRenderInHeader || !this.settings.renderAboveBacklinks) {
+					targetParent.appendChild(groupDiv);
+				} else {
+					// Insert before backlinks
+					targetParent.parentElement?.insertBefore(groupDiv, targetParent);
+				}
 				injectionSuccessful = true;
 			}
 		} else if (viewState.mode === 'source') { // Live Preview or Source mode
@@ -584,7 +612,18 @@ export default class VirtualFooterPlugin extends Plugin {
 					injectionSuccessful = true;
 				}
 			} else { // Footer in Live Preview or Source mode
-				const targetParent = view.containerEl.querySelector<HTMLElement>(SELECTOR_EDITOR_SIZER);
+				let targetParent: HTMLElement | null = null;
+				
+				if (this.settings.renderAboveBacklinks) {
+					// Try to find embedded backlinks first in live preview
+					targetParent = view.containerEl.querySelector<HTMLElement>(SELECTOR_EMBEDDED_BACKLINKS);
+				}
+				
+				// If no backlinks or renderAboveBacklinks is false, use regular editor sizer
+				if (!targetParent) {
+					targetParent = view.containerEl.querySelector<HTMLElement>(SELECTOR_EDITOR_SIZER);
+				}
+				
 				if (targetParent) {
 					// Ensure idempotency: remove existing footer
 					targetParent.querySelectorAll(`.${CSS_FOOTER_GROUP_ELEMENT}`).forEach(el => {
@@ -592,7 +631,13 @@ export default class VirtualFooterPlugin extends Plugin {
 						holder.component?.unload();
 						el.remove();
 					});
-					targetParent.appendChild(groupDiv);
+					
+					if (!this.settings.renderAboveBacklinks || targetParent.matches(SELECTOR_EDITOR_SIZER)) {
+						targetParent.appendChild(groupDiv);
+					} else {
+						// Insert before backlinks
+						targetParent.parentElement?.insertBefore(groupDiv, targetParent);
+					}
 					injectionSuccessful = true;
 				}
 			}
@@ -679,7 +724,17 @@ export default class VirtualFooterPlugin extends Plugin {
 
 			// Attempt to inject pending footer content
 			if (pending.footerDiv) {
-				const footerTargetParent = view.previewMode.containerEl.querySelector<HTMLElement>(SELECTOR_PREVIEW_FOOTER_AREA);
+				let footerTargetParent: HTMLElement | null = null;
+				
+				if (this.settings.renderAboveBacklinks) {
+					// Try to find embedded backlinks first
+					footerTargetParent = view.previewMode.containerEl.querySelector<HTMLElement>(SELECTOR_EMBEDDED_BACKLINKS);
+				}
+				// If no backlinks or renderAboveBacklinks is false, use regular footer
+				if (!footerTargetParent) {
+					footerTargetParent = view.previewMode.containerEl.querySelector<HTMLElement>(SELECTOR_PREVIEW_FOOTER_AREA);
+				}
+				
 				if (footerTargetParent) {
 					// Ensure idempotency: remove any existing footer content before adding new.
 					footerTargetParent.querySelectorAll(`.${CSS_FOOTER_GROUP_ELEMENT}`).forEach(el => {
@@ -687,7 +742,14 @@ export default class VirtualFooterPlugin extends Plugin {
 						holder.component?.unload();
 						el.remove();
 					});
-					footerTargetParent.appendChild(pending.footerDiv);
+					
+					if (!this.settings.renderAboveBacklinks) {
+						footerTargetParent.appendChild(pending.footerDiv);
+					} else {
+						// Insert before backlinks
+						footerTargetParent.parentElement?.insertBefore(pending.footerDiv, footerTargetParent);
+					}
+					
 					if (pending.footerDiv.component) {
 						this.attachInternalLinkHandlers(pending.footerDiv, sourcePath, pending.footerDiv.component);
 					}
@@ -1003,6 +1065,10 @@ export default class VirtualFooterPlugin extends Plugin {
 			if (typeof loadedData.renderInSourceMode === 'boolean') {
 				this.settings.renderInSourceMode = loadedData.renderInSourceMode;
 			}
+			// Load the new renderAboveBacklinks setting if it exists
+			if (typeof loadedData.renderAboveBacklinks === 'boolean') {
+				this.settings.renderAboveBacklinks = loadedData.renderAboveBacklinks;
+			}
 		}
 
 		// Ensure there's at least one rule, and all rules are normalized
@@ -1020,6 +1086,9 @@ export default class VirtualFooterPlugin extends Plugin {
 		}
 		if (typeof this.settings.renderInSourceMode !== 'boolean') {
 			this.settings.renderInSourceMode = DEFAULT_SETTINGS.renderInSourceMode!;
+		}
+		if (typeof this.settings.renderAboveBacklinks !== 'boolean') {
+			this.settings.renderAboveBacklinks = DEFAULT_SETTINGS.renderAboveBacklinks!;
 		}
 	}
 
@@ -1337,6 +1406,16 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 		containerEl.createEl('p', { text: 'Define rules to dynamically add content to the header or footer of notes based on their folder, tags, or properties.' });
 
 		// --- General Settings Section ---
+		new Setting(containerEl)
+			.setName('Render footer above backlinks')
+			.setDesc('If enabled, footer content will be rendered above the embedded backlinks section.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.renderAboveBacklinks!)
+				.onChange(async (value) => {
+					this.plugin.settings.renderAboveBacklinks = value;
+					await this.plugin.saveSettings();
+				}));
+
 		new Setting(containerEl)
 			.setName('Render in source mode')
 			.setDesc('If enabled, virtual content will be rendered in source mode. By default, content only appears in Live Preview and Reading modes.')

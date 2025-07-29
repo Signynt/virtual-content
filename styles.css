@@ -16,6 +16,10 @@
     min-height: 528px;
 }
 
+.virtual-footer-footer-group.virtual-footer-above-backlinks {
+    min-height: 100px;
+}
+
 .virtual-footer-delete-button {
     margin: 1em;
 }
