@@ -1408,7 +1408,7 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 		// --- General Settings Section ---
 		new Setting(containerEl)
 			.setName('Render footer above backlinks')
-			.setDesc('If enabled, footer content will be rendered above the embedded backlinks section.')
+			.setDesc('If enabled, footer content will be rendered above the embedded backlinks section. It is recommended to only enable this if you have backlinks enabled in the note, otherwise the note height will be off. Disabled by default.')
 			.addToggle(toggle => toggle
 				.setValue(this.plugin.settings.renderAboveBacklinks!)
 				.onChange(async (value) => {
