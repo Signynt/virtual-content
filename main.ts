@@ -103,6 +103,10 @@ interface Rule {
 	showInSeparateTab?: boolean;
 	/** For 'sidebar' location: the name of the separate tab. */
 	sidebarTabName?: string;
+	/** For 'header' location: whether to render above the properties section. */
+	renderAboveProperties?: boolean;
+	/** For 'footer' location: whether to render above the backlinks section. */
+	renderAboveBacklinks?: boolean;
 }
 
 /**
@@ -115,10 +119,6 @@ interface VirtualFooterSettings {
 	refreshOnFileOpen?: boolean;
 	/** Whether to render content in source mode. Defaults to false. */
 	renderInSourceMode?: boolean;
-	/** Whether to render footer content above embedded backlinks. Defaults to false. */
-	renderAboveBacklinks?: boolean;
-	/** Whether to render header content above the properties section. Defaults to false. */
-	renderHeaderAboveProperties?: boolean;
 }
 
 /**
@@ -146,11 +146,11 @@ const DEFAULT_SETTINGS: VirtualFooterSettings = {
 		showInSeparateTab: false,
 		sidebarTabName: '',
 		multiConditionLogic: 'any',
+		renderAboveProperties: false,
+		renderAboveBacklinks: false,
 	}],
 	refreshOnFileOpen: false, // Default to false
 	renderInSourceMode: false, // Default to false
-	renderAboveBacklinks: false, // Default to false
-	renderHeaderAboveProperties: false, // Default to false
 };
 
 // CSS Classes for styling and identifying plugin-generated elements
@@ -309,7 +309,13 @@ export class VirtualContentView extends ItemView {
 export default class VirtualFooterPlugin extends Plugin {
 	settings: VirtualFooterSettings;
 	/** Stores pending content injections for preview mode, awaiting DOM availability. */
-	private pendingPreviewInjections: WeakMap<MarkdownView, { headerDiv?: HTMLElementWithComponent, footerDiv?: HTMLElementWithComponent, filePath?: string }> = new WeakMap();
+	private pendingPreviewInjections: WeakMap<MarkdownView, { 
+		headerDiv?: HTMLElementWithComponent, 
+		footerDiv?: HTMLElementWithComponent,
+		headerAbovePropertiesDiv?: HTMLElementWithComponent,
+		footerAboveBacklinksDiv?: HTMLElementWithComponent,
+		filePath?: string
+	}> = new WeakMap();
 	/** Manages MutationObservers for views in preview mode to detect when injection targets are ready. */
 	private previewObservers: WeakMap<MarkdownView, MutationObserver> = new WeakMap();
 	private initialLayoutReadyProcessed = false;
@@ -456,14 +462,25 @@ export default class VirtualFooterPlugin extends Plugin {
 		const contentSeparator = "\n\n"; // Separator between content from multiple rules
 		this.lastSeparateTabContents.clear();
 
-		// Combine content from all applicable rules
+		// Combine content from all applicable rules, grouping by render location and positioning
+		const headerContentGroups: { normal: string[], aboveProperties: string[] } = { normal: [], aboveProperties: [] };
+		const footerContentGroups: { normal: string[], aboveBacklinks: string[] } = { normal: [], aboveBacklinks: [] };
+		
 		for (const { rule, contentText, index } of applicableRulesWithContent) {
 			if (!contentText || contentText.trim() === "") continue; // Skip empty content
 
 			if (rule.renderLocation === RenderLocation.Header) {
-				combinedHeaderText += (combinedHeaderText ? contentSeparator : "") + contentText;
+				if (rule.renderAboveProperties) {
+					headerContentGroups.aboveProperties.push(contentText);
+				} else {
+					headerContentGroups.normal.push(contentText);
+				}
 			} else if (rule.renderLocation === RenderLocation.Footer) {
-				combinedFooterText += (combinedFooterText ? contentSeparator : "") + contentText;
+				if (rule.renderAboveBacklinks) {
+					footerContentGroups.aboveBacklinks.push(contentText);
+				} else {
+					footerContentGroups.normal.push(contentText);
+				}
 				hasFooterRule = true;
 			} else if (rule.renderLocation === RenderLocation.Sidebar) {
 				if (rule.showInSeparateTab) {
@@ -499,29 +516,55 @@ export default class VirtualFooterPlugin extends Plugin {
 
 		let pendingHeaderDiv: HTMLElementWithComponent | null = null;
 		let pendingFooterDiv: HTMLElementWithComponent | null = null;
+		let pendingHeaderAbovePropertiesDiv: HTMLElementWithComponent | null = null;
+		let pendingFooterAboveBacklinksDiv: HTMLElementWithComponent | null = null;
 
-		// Render and inject content based on view mode
+		// Render and inject content based on view mode, handling each positioning group separately
 		if (shouldRenderInReading || shouldRenderInLivePreview || shouldRenderInSource) {
-			if (combinedHeaderText.trim()) {
-				const result = await this.renderAndInjectGroupedContent(view, combinedHeaderText, RenderLocation.Header);
-				// If in preview mode and injection is deferred, store the element
+			// Handle normal header content
+			if (headerContentGroups.normal.length > 0) {
+				const combinedContent = headerContentGroups.normal.join(contentSeparator);
+				const result = await this.renderAndInjectGroupedContent(view, combinedContent, RenderLocation.Header, false);
 				if (result && shouldRenderInReading) {
 					pendingHeaderDiv = result;
 				}
 			}
-			if (combinedFooterText.trim()) {
-				const result = await this.renderAndInjectGroupedContent(view, combinedFooterText, RenderLocation.Footer);
+			
+			// Handle header content above properties
+			if (headerContentGroups.aboveProperties.length > 0) {
+				const combinedContent = headerContentGroups.aboveProperties.join(contentSeparator);
+				const result = await this.renderAndInjectGroupedContent(view, combinedContent, RenderLocation.Header, true);
+				if (result && shouldRenderInReading) {
+					pendingHeaderAbovePropertiesDiv = result;
+				}
+			}
+			
+			// Handle normal footer content
+			if (footerContentGroups.normal.length > 0) {
+				const combinedContent = footerContentGroups.normal.join(contentSeparator);
+				const result = await this.renderAndInjectGroupedContent(view, combinedContent, RenderLocation.Footer, false, false);
 				if (result && shouldRenderInReading) {
 					pendingFooterDiv = result;
+				}
+			}
+			
+			// Handle footer content above backlinks
+			if (footerContentGroups.aboveBacklinks.length > 0) {
+				const combinedContent = footerContentGroups.aboveBacklinks.join(contentSeparator);
+				const result = await this.renderAndInjectGroupedContent(view, combinedContent, RenderLocation.Footer, false, true);
+				if (result && shouldRenderInReading) {
+					pendingFooterAboveBacklinksDiv = result;
 				}
 			}
 		}
 
 		// If any content is pending for preview mode, set up an observer
-		if (pendingHeaderDiv || pendingFooterDiv) {
+		if (pendingHeaderDiv || pendingFooterDiv || pendingHeaderAbovePropertiesDiv || pendingFooterAboveBacklinksDiv) {
 			this.pendingPreviewInjections.set(view, {
 				headerDiv: pendingHeaderDiv || undefined,
 				footerDiv: pendingFooterDiv || undefined,
+				headerAbovePropertiesDiv: pendingHeaderAbovePropertiesDiv || undefined,
+				footerAboveBacklinksDiv: pendingFooterAboveBacklinksDiv || undefined,
 				filePath: view.file.path,
 			});
 			this.ensurePreviewObserver(view);
@@ -533,12 +576,16 @@ export default class VirtualFooterPlugin extends Plugin {
 	 * @param view The MarkdownView to inject content into.
 	 * @param combinedContentText The combined Markdown string to render.
 	 * @param renderLocation Specifies whether to render in the header or footer.
+	 * @param renderAboveProperties For header content, whether to render above properties section.
+	 * @param renderAboveBacklinks For footer content, whether to render above backlinks section.
 	 * @returns The rendered HTMLElement if injection is deferred (for preview mode), otherwise null.
 	 */
 	private async renderAndInjectGroupedContent(
 		view: MarkdownView,
 		combinedContentText: string,
-		renderLocation: RenderLocation
+		renderLocation: RenderLocation,
+		renderAboveProperties: boolean = false,
+		renderAboveBacklinks: boolean = false
 	): Promise<HTMLElementWithComponent | null> {
 		if (!combinedContentText || combinedContentText.trim() === "") {
 			return null;
@@ -556,8 +603,14 @@ export default class VirtualFooterPlugin extends Plugin {
 		);
 
 		// Add the above-backlinks class for footer content when the setting is enabled
-		if (!isRenderInHeader && this.settings.renderAboveBacklinks) {
+		if (!isRenderInHeader && renderAboveBacklinks) {
 			groupDiv.classList.add(CSS_ABOVE_BACKLINKS);
+			groupDiv.classList.add('virtual-footer-above-backlinks');
+		}
+		
+		// Add the above-properties class for header content when the setting is enabled
+		if (isRenderInHeader && renderAboveProperties) {
+			groupDiv.classList.add('virtual-footer-above-properties');
 		}
 
 		// Create and manage an Obsidian Component for the lifecycle of this content
@@ -577,16 +630,16 @@ export default class VirtualFooterPlugin extends Plugin {
 			let targetParent: HTMLElement | null = null;
 			
 			if (isRenderInHeader) {
-				if (this.settings.renderHeaderAboveProperties) {
+				if (renderAboveProperties) {
 					// Try to find metadata container first
 					targetParent = previewContentParent.querySelector<HTMLElement>(SELECTOR_METADATA_CONTAINER);
 				}
-				// If no metadata container or renderHeaderAboveProperties is false, use regular header
+				// If no metadata container or renderAboveProperties is false, use regular header
 				if (!targetParent) {
 					targetParent = previewContentParent.querySelector<HTMLElement>(SELECTOR_PREVIEW_HEADER_AREA);
 				}
 			} else { // Footer
-				if (this.settings.renderAboveBacklinks) {
+				if (renderAboveBacklinks) {
 					// Try to find embedded backlinks first
 					targetParent = previewContentParent.querySelector<HTMLElement>(SELECTOR_EMBEDDED_BACKLINKS);
 				}
@@ -598,16 +651,39 @@ export default class VirtualFooterPlugin extends Plugin {
 			
 			if (targetParent) {
 				// Ensure idempotency: remove any existing content of this type before adding new
-				const classToRemove = isRenderInHeader ? CSS_HEADER_GROUP_ELEMENT : CSS_FOOTER_GROUP_ELEMENT;
-				targetParent.querySelectorAll(`.${classToRemove}`).forEach(el => {
-					const holder = el as HTMLElementWithComponent;
-					holder.component?.unload();
-					el.remove();
-				});
+				if (isRenderInHeader && renderAboveProperties) {
+					// Remove existing header content above properties
+					view.previewMode.containerEl.querySelectorAll(`.${CSS_HEADER_GROUP_ELEMENT}.virtual-footer-above-properties`).forEach(el => {
+						const holder = el as HTMLElementWithComponent;
+						holder.component?.unload();
+						el.remove();
+					});
+				} else if (isRenderInHeader && !renderAboveProperties) {
+					// Remove existing normal header content
+					targetParent.querySelectorAll(`.${CSS_HEADER_GROUP_ELEMENT}:not(.virtual-footer-above-properties)`).forEach(el => {
+						const holder = el as HTMLElementWithComponent;
+						holder.component?.unload();
+						el.remove();
+					});
+				} else if (!isRenderInHeader && renderAboveBacklinks) {
+					// Remove existing footer content above backlinks
+					view.previewMode.containerEl.querySelectorAll(`.${CSS_FOOTER_GROUP_ELEMENT}.virtual-footer-above-backlinks`).forEach(el => {
+						const holder = el as HTMLElementWithComponent;
+						holder.component?.unload();
+						el.remove();
+					});
+				} else if (!isRenderInHeader && !renderAboveBacklinks) {
+					// Remove existing normal footer content
+					targetParent.querySelectorAll(`.${CSS_FOOTER_GROUP_ELEMENT}:not(.virtual-footer-above-backlinks)`).forEach(el => {
+						const holder = el as HTMLElementWithComponent;
+						holder.component?.unload();
+						el.remove();
+					});
+				}
 				
-				if (isRenderInHeader && !this.settings.renderHeaderAboveProperties) {
+				if (isRenderInHeader && !renderAboveProperties) {
 					targetParent.appendChild(groupDiv);
-				} else if (!isRenderInHeader && !this.settings.renderAboveBacklinks) {
+				} else if (!isRenderInHeader && !renderAboveBacklinks) {
 					targetParent.appendChild(groupDiv);
 				} else {
 					// Insert before properties or backlinks
@@ -619,17 +695,17 @@ export default class VirtualFooterPlugin extends Plugin {
 			if (isRenderInHeader) {
 				let targetParent: HTMLElement | null = null;
 				
-				if (this.settings.renderHeaderAboveProperties) {
+				if (renderAboveProperties) {
 					// Try to find metadata container first in live preview
 					targetParent = view.containerEl.querySelector<HTMLElement>(SELECTOR_METADATA_CONTAINER);
 				}
 				
-				// If no metadata container or renderHeaderAboveProperties is false, use content container
+				// If no metadata container or renderAboveProperties is false, use content container
 				if (!targetParent) {
 					const cmContentContainer = view.containerEl.querySelector<HTMLElement>(SELECTOR_LIVE_PREVIEW_CONTENT_CONTAINER);
 					if (cmContentContainer?.parentElement) {
-						// Ensure idempotency: remove existing header
-						cmContentContainer.parentElement.querySelectorAll(`.${CSS_HEADER_GROUP_ELEMENT}`).forEach(el => {
+						// Ensure idempotency: remove existing normal header content
+						cmContentContainer.parentElement.querySelectorAll(`.${CSS_HEADER_GROUP_ELEMENT}:not(.virtual-footer-above-properties)`).forEach(el => {
 							const holder = el as HTMLElementWithComponent;
 							holder.component?.unload();
 							el.remove();
@@ -638,8 +714,8 @@ export default class VirtualFooterPlugin extends Plugin {
 						injectionSuccessful = true;
 					}
 				} else {
-					// Ensure idempotency: remove existing header
-					view.containerEl.querySelectorAll(`.${CSS_HEADER_GROUP_ELEMENT}`).forEach(el => {
+					// Ensure idempotency: remove existing header content above properties
+					view.containerEl.querySelectorAll(`.${CSS_HEADER_GROUP_ELEMENT}.virtual-footer-above-properties`).forEach(el => {
 						const holder = el as HTMLElementWithComponent;
 						holder.component?.unload();
 						el.remove();
@@ -651,7 +727,7 @@ export default class VirtualFooterPlugin extends Plugin {
 			} else { // Footer in Live Preview or Source mode
 				let targetParent: HTMLElement | null = null;
 				
-				if (this.settings.renderAboveBacklinks) {
+				if (renderAboveBacklinks) {
 					// Try to find embedded backlinks first in live preview
 					targetParent = view.containerEl.querySelector<HTMLElement>(SELECTOR_EMBEDDED_BACKLINKS);
 				}
@@ -662,14 +738,24 @@ export default class VirtualFooterPlugin extends Plugin {
 				}
 				
 				if (targetParent) {
-					// Ensure idempotency: remove existing footer
-					targetParent.querySelectorAll(`.${CSS_FOOTER_GROUP_ELEMENT}`).forEach(el => {
-						const holder = el as HTMLElementWithComponent;
-						holder.component?.unload();
-						el.remove();
-					});
+					// Ensure idempotency: remove existing content of the appropriate type
+					if (renderAboveBacklinks) {
+						// Remove existing footer content above backlinks
+						view.containerEl.querySelectorAll(`.${CSS_FOOTER_GROUP_ELEMENT}.virtual-footer-above-backlinks`).forEach(el => {
+							const holder = el as HTMLElementWithComponent;
+							holder.component?.unload();
+							el.remove();
+						});
+					} else {
+						// Remove existing normal footer content
+						targetParent.querySelectorAll(`.${CSS_FOOTER_GROUP_ELEMENT}:not(.virtual-footer-above-backlinks)`).forEach(el => {
+							const holder = el as HTMLElementWithComponent;
+							holder.component?.unload();
+							el.remove();
+						});
+					}
 					
-					if (!this.settings.renderAboveBacklinks || targetParent.matches(SELECTOR_EDITOR_SIZER)) {
+					if (!renderAboveBacklinks || targetParent.matches(SELECTOR_EDITOR_SIZER)) {
 						targetParent.appendChild(groupDiv);
 					} else {
 						// Insert before backlinks
@@ -727,7 +813,7 @@ export default class VirtualFooterPlugin extends Plugin {
 			}
 
 			// If there's nothing left to inject, clean up and disconnect.
-			if (!pending.headerDiv && !pending.footerDiv) {
+			if (!pending.headerDiv && !pending.footerDiv && !pending.headerAbovePropertiesDiv && !pending.footerAboveBacklinksDiv) {
 				observer.disconnect();
 				if (this.previewObservers.get(view) === observer) {
 					this.previewObservers.delete(view);
@@ -741,17 +827,7 @@ export default class VirtualFooterPlugin extends Plugin {
 
 			// Attempt to inject pending header content
 			if (pending.headerDiv) {
-				let headerTargetParent: HTMLElement | null = null;
-				
-				if (this.settings.renderHeaderAboveProperties) {
-					// Try to find metadata container first
-					headerTargetParent = view.previewMode.containerEl.querySelector<HTMLElement>(SELECTOR_METADATA_CONTAINER);
-				}
-				// If no metadata container or renderHeaderAboveProperties is false, use regular header
-				if (!headerTargetParent) {
-					headerTargetParent = view.previewMode.containerEl.querySelector<HTMLElement>(SELECTOR_PREVIEW_HEADER_AREA);
-				}
-				
+				const headerTargetParent = view.previewMode.containerEl.querySelector<HTMLElement>(SELECTOR_PREVIEW_HEADER_AREA);
 				if (headerTargetParent) {
 					// Ensure idempotency: remove any existing header content before adding new.
 					headerTargetParent.querySelectorAll(`.${CSS_HEADER_GROUP_ELEMENT}`).forEach(el => {
@@ -759,14 +835,7 @@ export default class VirtualFooterPlugin extends Plugin {
 						holder.component?.unload();
 						el.remove();
 					});
-					
-					if (!this.settings.renderHeaderAboveProperties) {
-						headerTargetParent.appendChild(pending.headerDiv);
-					} else {
-						// Insert before properties
-						headerTargetParent.parentElement?.insertBefore(pending.headerDiv, headerTargetParent);
-					}
-					
+					headerTargetParent.appendChild(pending.headerDiv);
 					if (pending.headerDiv.component) {
 						this.attachInternalLinkHandlers(pending.headerDiv, sourcePath, pending.headerDiv.component);
 					}
@@ -776,19 +845,32 @@ export default class VirtualFooterPlugin extends Plugin {
 				}
 			}
 
+			// Attempt to inject pending header content above properties
+			if (pending.headerAbovePropertiesDiv) {
+				const headerTargetParent = view.previewMode.containerEl.querySelector<HTMLElement>(SELECTOR_METADATA_CONTAINER);
+				if (headerTargetParent) {
+					// Ensure idempotency: remove any existing content of this type
+					view.previewMode.containerEl.querySelectorAll(`.${CSS_HEADER_GROUP_ELEMENT}.virtual-footer-above-properties`).forEach(el => {
+						const holder = el as HTMLElementWithComponent;
+						holder.component?.unload();
+						el.remove();
+					});
+					// Add a class to distinguish this from regular header content
+					pending.headerAbovePropertiesDiv.classList.add('virtual-footer-above-properties');
+					// Insert before properties
+					headerTargetParent.parentElement?.insertBefore(pending.headerAbovePropertiesDiv, headerTargetParent);
+					if (pending.headerAbovePropertiesDiv.component) {
+						this.attachInternalLinkHandlers(pending.headerAbovePropertiesDiv, sourcePath, pending.headerAbovePropertiesDiv.component);
+					}
+					delete pending.headerAbovePropertiesDiv; // Injection successful
+				} else {
+					allResolved = false; // Target not yet available
+				}
+			}
+
 			// Attempt to inject pending footer content
 			if (pending.footerDiv) {
-				let footerTargetParent: HTMLElement | null = null;
-				
-				if (this.settings.renderAboveBacklinks) {
-					// Try to find embedded backlinks first
-					footerTargetParent = view.previewMode.containerEl.querySelector<HTMLElement>(SELECTOR_EMBEDDED_BACKLINKS);
-				}
-				// If no backlinks or renderAboveBacklinks is false, use regular footer
-				if (!footerTargetParent) {
-					footerTargetParent = view.previewMode.containerEl.querySelector<HTMLElement>(SELECTOR_PREVIEW_FOOTER_AREA);
-				}
-				
+				const footerTargetParent = view.previewMode.containerEl.querySelector<HTMLElement>(SELECTOR_PREVIEW_FOOTER_AREA);
 				if (footerTargetParent) {
 					// Ensure idempotency: remove any existing footer content before adding new.
 					footerTargetParent.querySelectorAll(`.${CSS_FOOTER_GROUP_ELEMENT}`).forEach(el => {
@@ -796,18 +878,34 @@ export default class VirtualFooterPlugin extends Plugin {
 						holder.component?.unload();
 						el.remove();
 					});
-					
-					if (!this.settings.renderAboveBacklinks) {
-						footerTargetParent.appendChild(pending.footerDiv);
-					} else {
-						// Insert before backlinks
-						footerTargetParent.parentElement?.insertBefore(pending.footerDiv, footerTargetParent);
-					}
-					
+					footerTargetParent.appendChild(pending.footerDiv);
 					if (pending.footerDiv.component) {
 						this.attachInternalLinkHandlers(pending.footerDiv, sourcePath, pending.footerDiv.component);
 					}
 					delete pending.footerDiv; // Injection successful
+				} else {
+					allResolved = false; // Target not yet available
+				}
+			}
+
+			// Attempt to inject pending footer content above backlinks
+			if (pending.footerAboveBacklinksDiv) {
+				const footerTargetParent = view.previewMode.containerEl.querySelector<HTMLElement>(SELECTOR_EMBEDDED_BACKLINKS);
+				if (footerTargetParent) {
+					// Ensure idempotency: remove any existing content of this type
+					view.previewMode.containerEl.querySelectorAll(`.${CSS_FOOTER_GROUP_ELEMENT}.virtual-footer-above-backlinks`).forEach(el => {
+						const holder = el as HTMLElementWithComponent;
+						holder.component?.unload();
+						el.remove();
+					});
+					// Add a class to distinguish this from regular footer content
+					pending.footerAboveBacklinksDiv.classList.add('virtual-footer-above-backlinks');
+					// Insert before backlinks
+					footerTargetParent.parentElement?.insertBefore(pending.footerAboveBacklinksDiv, footerTargetParent);
+					if (pending.footerAboveBacklinksDiv.component) {
+						this.attachInternalLinkHandlers(pending.footerAboveBacklinksDiv, sourcePath, pending.footerAboveBacklinksDiv.component);
+					}
+					delete pending.footerAboveBacklinksDiv; // Injection successful
 				} else {
 					allResolved = false; // Target not yet available
 				}
@@ -1134,14 +1232,6 @@ export default class VirtualFooterPlugin extends Plugin {
 			if (typeof loadedData.renderInSourceMode === 'boolean') {
 				this.settings.renderInSourceMode = loadedData.renderInSourceMode;
 			}
-			// Load the new renderAboveBacklinks setting if it exists
-			if (typeof loadedData.renderAboveBacklinks === 'boolean') {
-				this.settings.renderAboveBacklinks = loadedData.renderAboveBacklinks;
-			}
-			// Load the new renderHeaderAboveProperties setting if it exists
-			if (typeof loadedData.renderHeaderAboveProperties === 'boolean') {
-				this.settings.renderHeaderAboveProperties = loadedData.renderHeaderAboveProperties;
-			}
 		}
 
 		// Ensure there's at least one rule, and all rules are normalized
@@ -1159,12 +1249,6 @@ export default class VirtualFooterPlugin extends Plugin {
 		}
 		if (typeof this.settings.renderInSourceMode !== 'boolean') {
 			this.settings.renderInSourceMode = DEFAULT_SETTINGS.renderInSourceMode!;
-		}
-		if (typeof this.settings.renderAboveBacklinks !== 'boolean') {
-			this.settings.renderAboveBacklinks = DEFAULT_SETTINGS.renderAboveBacklinks!;
-		}
-		if (typeof this.settings.renderHeaderAboveProperties !== 'boolean') {
-			this.settings.renderHeaderAboveProperties = DEFAULT_SETTINGS.renderHeaderAboveProperties!;
 		}
 	}
 
@@ -1288,6 +1372,18 @@ export default class VirtualFooterPlugin extends Plugin {
 		} else {
 			delete rule.showInSeparateTab;
 			delete rule.sidebarTabName;
+		}
+
+		// Normalize positioning fields based on render location
+		if (rule.renderLocation === RenderLocation.Header) {
+			rule.renderAboveProperties = typeof originalRule.renderAboveProperties === 'boolean' ? originalRule.renderAboveProperties : false;
+			delete rule.renderAboveBacklinks;
+		} else if (rule.renderLocation === RenderLocation.Footer) {
+			rule.renderAboveBacklinks = typeof originalRule.renderAboveBacklinks === 'boolean' ? originalRule.renderAboveBacklinks : false;
+			delete rule.renderAboveProperties;
+		} else {
+			delete rule.renderAboveProperties;
+			delete rule.renderAboveBacklinks;
 		}
 	}
 
@@ -1482,26 +1578,6 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 		containerEl.createEl('p', { text: 'Define rules to dynamically add content to the header or footer of notes based on their folder, tags, or properties.' });
 
 		// --- General Settings Section ---
-		new Setting(containerEl)
-			.setName('Render header above properties')
-			.setDesc('If enabled, header content will be rendered above the frontmatter properties section. It is recommended to only enable this if you have properties in your notes, otherwise the note height may be affected. Disabled by default.')
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.renderHeaderAboveProperties!)
-				.onChange(async (value) => {
-					this.plugin.settings.renderHeaderAboveProperties = value;
-					await this.plugin.saveSettings();
-				}));
-
-		new Setting(containerEl)
-			.setName('Render footer above backlinks')
-			.setDesc('If enabled, footer content will be rendered above the embedded backlinks section. It is recommended to only enable this if you have backlinks enabled in the note, otherwise the note height will be off. Disabled by default.')
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.renderAboveBacklinks!)
-				.onChange(async (value) => {
-					this.plugin.settings.renderAboveBacklinks = value;
-					await this.plugin.saveSettings();
-				}));
-
 		new Setting(containerEl)
 			.setName('Render in source mode')
 			.setDesc('If enabled, virtual content will be rendered in source mode. By default, content only appears in Live Preview and Reading modes.')
@@ -1880,6 +1956,32 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 							this.debouncedSave();
 						}));
 			}
+		}
+
+		// --- Header-Specific Settings ---
+		if (rule.renderLocation === RenderLocation.Header) {
+			new Setting(ruleContentContainer)
+				.setName('Render above properties')
+				.setDesc('If enabled, header content will be rendered above the frontmatter properties section.')
+				.addToggle(toggle => toggle
+					.setValue(rule.renderAboveProperties || false)
+					.onChange(async (value) => {
+						rule.renderAboveProperties = value;
+						await this.plugin.saveSettings();
+					}));
+		}
+
+		// --- Footer-Specific Settings ---
+		if (rule.renderLocation === RenderLocation.Footer) {
+			new Setting(ruleContentContainer)
+				.setName('Render above backlinks')
+				.setDesc('If enabled, footer content will be rendered above the embedded backlinks section. It is recommended to only enable this if you have backlinks enabled in the note, otherwise the note height may be affected.')
+				.addToggle(toggle => toggle
+					.setValue(rule.renderAboveBacklinks || false)
+					.onChange(async (value) => {
+						rule.renderAboveBacklinks = value;
+						await this.plugin.saveSettings();
+					}));
 		}
 		
 		// --- Rule Actions: Reorder and Delete ---
