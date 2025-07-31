@@ -1291,6 +1291,8 @@ export default class VirtualFooterPlugin extends Plugin {
 			showInSeparateTab: loadedRule.showInSeparateTab || false,
 			sidebarTabName: loadedRule.sidebarTabName || '',
 			multiConditionLogic: loadedRule.multiConditionLogic || 'any',
+			renderAboveProperties: loadedRule.renderAboveProperties !== undefined ? loadedRule.renderAboveProperties : undefined,
+			renderAboveBacklinks: loadedRule.renderAboveBacklinks !== undefined ? loadedRule.renderAboveBacklinks : undefined,
 		};
 
 		// Populate type-specific fields
