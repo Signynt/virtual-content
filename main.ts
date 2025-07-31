@@ -117,6 +117,8 @@ interface VirtualFooterSettings {
 	renderInSourceMode?: boolean;
 	/** Whether to render footer content above embedded backlinks. Defaults to false. */
 	renderAboveBacklinks?: boolean;
+	/** Whether to render header content above the properties section. Defaults to false. */
+	renderHeaderAboveProperties?: boolean;
 }
 
 /**
@@ -148,6 +150,7 @@ const DEFAULT_SETTINGS: VirtualFooterSettings = {
 	refreshOnFileOpen: false, // Default to false
 	renderInSourceMode: false, // Default to false
 	renderAboveBacklinks: false, // Default to false
+	renderHeaderAboveProperties: false, // Default to false
 };
 
 // CSS Classes for styling and identifying plugin-generated elements
@@ -168,6 +171,7 @@ const SELECTOR_EDITOR_SIZER = '.cm-sizer'; // Target for live preview footer inj
 const SELECTOR_PREVIEW_HEADER_AREA = '.mod-header.mod-ui'; // Target for reading mode header injection
 const SELECTOR_PREVIEW_FOOTER_AREA = '.mod-footer'; // Target for reading mode footer injection
 const SELECTOR_EMBEDDED_BACKLINKS = '.embedded-backlinks'; // Target for positioning above backlinks
+const SELECTOR_METADATA_CONTAINER = '.metadata-container'; // Target for positioning above properties
 
 const VIRTUAL_CONTENT_VIEW_TYPE = 'virtual-content-view';
 const VIRTUAL_CONTENT_SEPARATE_VIEW_TYPE_PREFIX = 'virtual-content-separate-view-';
@@ -573,7 +577,14 @@ export default class VirtualFooterPlugin extends Plugin {
 			let targetParent: HTMLElement | null = null;
 			
 			if (isRenderInHeader) {
-				targetParent = previewContentParent.querySelector<HTMLElement>(SELECTOR_PREVIEW_HEADER_AREA);
+				if (this.settings.renderHeaderAboveProperties) {
+					// Try to find metadata container first
+					targetParent = previewContentParent.querySelector<HTMLElement>(SELECTOR_METADATA_CONTAINER);
+				}
+				// If no metadata container or renderHeaderAboveProperties is false, use regular header
+				if (!targetParent) {
+					targetParent = previewContentParent.querySelector<HTMLElement>(SELECTOR_PREVIEW_HEADER_AREA);
+				}
 			} else { // Footer
 				if (this.settings.renderAboveBacklinks) {
 					// Try to find embedded backlinks first
@@ -594,25 +605,47 @@ export default class VirtualFooterPlugin extends Plugin {
 					el.remove();
 				});
 				
-				if (isRenderInHeader || !this.settings.renderAboveBacklinks) {
+				if (isRenderInHeader && !this.settings.renderHeaderAboveProperties) {
+					targetParent.appendChild(groupDiv);
+				} else if (!isRenderInHeader && !this.settings.renderAboveBacklinks) {
 					targetParent.appendChild(groupDiv);
 				} else {
-					// Insert before backlinks
+					// Insert before properties or backlinks
 					targetParent.parentElement?.insertBefore(groupDiv, targetParent);
 				}
 				injectionSuccessful = true;
 			}
 		} else if (viewState.mode === 'source') { // Live Preview or Source mode
 			if (isRenderInHeader) {
-				const cmContentContainer = view.containerEl.querySelector<HTMLElement>(SELECTOR_LIVE_PREVIEW_CONTENT_CONTAINER);
-				if (cmContentContainer?.parentElement) {
+				let targetParent: HTMLElement | null = null;
+				
+				if (this.settings.renderHeaderAboveProperties) {
+					// Try to find metadata container first in live preview
+					targetParent = view.containerEl.querySelector<HTMLElement>(SELECTOR_METADATA_CONTAINER);
+				}
+				
+				// If no metadata container or renderHeaderAboveProperties is false, use content container
+				if (!targetParent) {
+					const cmContentContainer = view.containerEl.querySelector<HTMLElement>(SELECTOR_LIVE_PREVIEW_CONTENT_CONTAINER);
+					if (cmContentContainer?.parentElement) {
+						// Ensure idempotency: remove existing header
+						cmContentContainer.parentElement.querySelectorAll(`.${CSS_HEADER_GROUP_ELEMENT}`).forEach(el => {
+							const holder = el as HTMLElementWithComponent;
+							holder.component?.unload();
+							el.remove();
+						});
+						cmContentContainer.parentElement.insertBefore(groupDiv, cmContentContainer);
+						injectionSuccessful = true;
+					}
+				} else {
 					// Ensure idempotency: remove existing header
-					cmContentContainer.parentElement.querySelectorAll(`.${CSS_HEADER_GROUP_ELEMENT}`).forEach(el => {
+					view.containerEl.querySelectorAll(`.${CSS_HEADER_GROUP_ELEMENT}`).forEach(el => {
 						const holder = el as HTMLElementWithComponent;
 						holder.component?.unload();
 						el.remove();
 					});
-					cmContentContainer.parentElement.insertBefore(groupDiv, cmContentContainer);
+					// Insert before properties
+					targetParent.parentElement?.insertBefore(groupDiv, targetParent);
 					injectionSuccessful = true;
 				}
 			} else { // Footer in Live Preview or Source mode
@@ -708,7 +741,17 @@ export default class VirtualFooterPlugin extends Plugin {
 
 			// Attempt to inject pending header content
 			if (pending.headerDiv) {
-				const headerTargetParent = view.previewMode.containerEl.querySelector<HTMLElement>(SELECTOR_PREVIEW_HEADER_AREA);
+				let headerTargetParent: HTMLElement | null = null;
+				
+				if (this.settings.renderHeaderAboveProperties) {
+					// Try to find metadata container first
+					headerTargetParent = view.previewMode.containerEl.querySelector<HTMLElement>(SELECTOR_METADATA_CONTAINER);
+				}
+				// If no metadata container or renderHeaderAboveProperties is false, use regular header
+				if (!headerTargetParent) {
+					headerTargetParent = view.previewMode.containerEl.querySelector<HTMLElement>(SELECTOR_PREVIEW_HEADER_AREA);
+				}
+				
 				if (headerTargetParent) {
 					// Ensure idempotency: remove any existing header content before adding new.
 					headerTargetParent.querySelectorAll(`.${CSS_HEADER_GROUP_ELEMENT}`).forEach(el => {
@@ -716,7 +759,14 @@ export default class VirtualFooterPlugin extends Plugin {
 						holder.component?.unload();
 						el.remove();
 					});
-					headerTargetParent.appendChild(pending.headerDiv);
+					
+					if (!this.settings.renderHeaderAboveProperties) {
+						headerTargetParent.appendChild(pending.headerDiv);
+					} else {
+						// Insert before properties
+						headerTargetParent.parentElement?.insertBefore(pending.headerDiv, headerTargetParent);
+					}
+					
 					if (pending.headerDiv.component) {
 						this.attachInternalLinkHandlers(pending.headerDiv, sourcePath, pending.headerDiv.component);
 					}
@@ -1088,6 +1138,10 @@ export default class VirtualFooterPlugin extends Plugin {
 			if (typeof loadedData.renderAboveBacklinks === 'boolean') {
 				this.settings.renderAboveBacklinks = loadedData.renderAboveBacklinks;
 			}
+			// Load the new renderHeaderAboveProperties setting if it exists
+			if (typeof loadedData.renderHeaderAboveProperties === 'boolean') {
+				this.settings.renderHeaderAboveProperties = loadedData.renderHeaderAboveProperties;
+			}
 		}
 
 		// Ensure there's at least one rule, and all rules are normalized
@@ -1108,6 +1162,9 @@ export default class VirtualFooterPlugin extends Plugin {
 		}
 		if (typeof this.settings.renderAboveBacklinks !== 'boolean') {
 			this.settings.renderAboveBacklinks = DEFAULT_SETTINGS.renderAboveBacklinks!;
+		}
+		if (typeof this.settings.renderHeaderAboveProperties !== 'boolean') {
+			this.settings.renderHeaderAboveProperties = DEFAULT_SETTINGS.renderHeaderAboveProperties!;
 		}
 	}
 
@@ -1425,6 +1482,16 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 		containerEl.createEl('p', { text: 'Define rules to dynamically add content to the header or footer of notes based on their folder, tags, or properties.' });
 
 		// --- General Settings Section ---
+		new Setting(containerEl)
+			.setName('Render header above properties')
+			.setDesc('If enabled, header content will be rendered above the frontmatter properties section. It is recommended to only enable this if you have properties in your notes, otherwise the note height may be affected. Disabled by default.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.renderHeaderAboveProperties!)
+				.onChange(async (value) => {
+					this.plugin.settings.renderHeaderAboveProperties = value;
+					await this.plugin.saveSettings();
+				}));
+
 		new Setting(containerEl)
 			.setName('Render footer above backlinks')
 			.setDesc('If enabled, footer content will be rendered above the embedded backlinks section. It is recommended to only enable this if you have backlinks enabled in the note, otherwise the note height will be off. Disabled by default.')
