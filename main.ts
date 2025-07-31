@@ -979,12 +979,19 @@ export default class VirtualFooterPlugin extends Plugin {
 		const expectedPropertyValue = rule.propertyValue;
 		const actualPropertyValue = frontmatter[propertyKey];
 
+		// If the property exists in frontmatter
 		if (actualPropertyValue !== undefined && actualPropertyValue !== null) {
+			// If no expected value is specified, match any file that has this property
+			if (!expectedPropertyValue || expectedPropertyValue.trim() === '') {
+				return true;
+			}
+			
+			// Otherwise, check for exact value match
 			if (typeof actualPropertyValue === 'string') {
 				return actualPropertyValue === expectedPropertyValue;
 			} else if (Array.isArray(actualPropertyValue)) {
 				// For arrays, check if the expected value is one of the items
-				return actualPropertyValue.map(String).includes(expectedPropertyValue!);
+				return actualPropertyValue.map(String).includes(expectedPropertyValue);
 			} else if (typeof actualPropertyValue === 'number' || typeof actualPropertyValue === 'boolean') {
 				return String(actualPropertyValue) === expectedPropertyValue;
 			}
@@ -1708,9 +1715,9 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 
 			new Setting(ruleContentContainer)
 				.setName('Property value')
-				.setDesc('The value the property should have. For list/array properties, matches if this value is one of the items.')
+				.setDesc('The value the property should have. Leave empty to match any file that has this property (regardless of value). For list/array properties, matches if this value is one of the items.')
 				.addText(text => text
-					.setPlaceholder('e.g., complete, article, John Doe')
+					.setPlaceholder('e.g., complete, article, John Doe (or leave empty)')
 					.setValue(rule.propertyValue || '')
 					.onChange((value) => {
 						rule.propertyValue = value;
@@ -1996,7 +2003,7 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 				}, this.plugin.app);
 			});
 			setting.addText(text => text
-				.setPlaceholder('Property value')
+				.setPlaceholder('Property value (or leave empty)')
 				.setValue(condition.propertyValue || '')
 				.onChange((value) => {
 					condition.propertyValue = value;
