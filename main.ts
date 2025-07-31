@@ -45,6 +45,8 @@ enum RenderLocation {
 interface SubCondition {
 	/** The type of condition (folder, tag, or property). */
 	type: 'folder' | 'tag' | 'property';
+	/** Whether this condition should be negated (not met). Defaults to false. */
+	negated?: boolean;
 	/** For 'folder' type: path to the folder. */
 	path?: string;
 	/** For 'folder' type: whether to match subfolders. */
@@ -897,14 +899,17 @@ export default class VirtualFooterPlugin extends Plugin {
 			else if (currentRule.type === RuleType.Multi) {
 				if (currentRule.conditions && currentRule.conditions.length > 0) {
 					const checkCondition = (condition: SubCondition): boolean => {
+						let result = false;
 						if (condition.type === 'folder') {
-							return this._checkFolderMatch(file, condition);
+							result = this._checkFolderMatch(file, condition);
 						} else if (condition.type === 'tag') {
-							return this._checkTagMatch(fileTags, condition);
+							result = this._checkTagMatch(fileTags, condition);
 						} else if (condition.type === 'property') {
-							return this._checkPropertyMatch(fileCache?.frontmatter, condition);
+							result = this._checkPropertyMatch(fileCache?.frontmatter, condition);
 						}
-						return false;
+						
+						// Apply negation if specified
+						return condition.negated ? !result : result;
 					};
 
 					if (currentRule.multiConditionLogic === 'all') {
@@ -1847,7 +1852,7 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 				.setCta()
 				.onClick(async () => {
 					rule.conditions = rule.conditions || [];
-					rule.conditions.push({ type: 'folder', path: '', recursive: true });
+					rule.conditions.push({ type: 'folder', path: '', recursive: true, negated: false });
 					await this.plugin.saveSettings();
 					this.display();
 				}));
@@ -1857,6 +1862,15 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 		const conditionDiv = containerEl.createDiv('virtual-footer-sub-condition-item');
 
 		const setting = new Setting(conditionDiv)
+			.addDropdown(dropdown => dropdown
+				.addOption('is', 'is')
+				.addOption('not', 'not')
+				.setValue(condition.negated ? 'not' : 'is')
+				.onChange(async (value: 'is' | 'not') => {
+					condition.negated = value === 'not';
+					await this.plugin.saveSettings();
+				})
+			)
 			.addDropdown(dropdown => dropdown
 				.addOption('folder', 'Folder')
 				.addOption('tag', 'Tag')
