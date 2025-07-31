@@ -73,6 +73,8 @@ interface Rule {
 	enabled?: boolean;
 	/** The type of criteria for this rule (folder-based, tag-based, or property-based). */
 	type: RuleType;
+	/** Whether this rule's condition should be negated (not met). Defaults to false. */
+	negated?: boolean;
 	/** For 'folder' type: path to the folder. "" for all files, "/" for root. */
 	path?: string;
 	/** For 'tag' type: the tag name (without '#'). */
@@ -922,6 +924,11 @@ export default class VirtualFooterPlugin extends Plugin {
 				}
 			}
 
+			// Apply negation to the main rule if specified (for non-multi rules)
+			if (currentRule.type !== RuleType.Multi && currentRule.negated) {
+				isMatch = !isMatch;
+			}
+
 			if (isMatch) {
 				const contentText = await this._fetchContentForRule(currentRule);
 				allApplicable.push({ rule: currentRule, contentText, index });
@@ -1578,6 +1585,19 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 		// --- Type-Specific Settings ---
 		if (rule.type === RuleType.Folder) {
 			new Setting(ruleContentContainer)
+				.setName('Condition')
+				.setDesc('Choose whether this condition should be met or not met.')
+				.addDropdown(dropdown => dropdown
+					.addOption('is', 'is')
+					.addOption('not', 'not')
+					.setValue(rule.negated ? 'not' : 'is')
+					.onChange(async (value: 'is' | 'not') => {
+						rule.negated = value === 'not';
+						await this.plugin.saveSettings();
+					})
+				);
+
+			new Setting(ruleContentContainer)
 				.setName('Folder path')
 				.setDesc('Path for the rule. Use "" for all files, "/" for root folder, or "FolderName/" for specific folders (ensure trailing slash for non-root folders).')
 				.addText(text => {
@@ -1614,6 +1634,19 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 
 		} else if (rule.type === RuleType.Tag) {
 			new Setting(ruleContentContainer)
+				.setName('Condition')
+				.setDesc('Choose whether this condition should be met or not met.')
+				.addDropdown(dropdown => dropdown
+					.addOption('is', 'is')
+					.addOption('not', 'not')
+					.setValue(rule.negated ? 'not' : 'is')
+					.onChange(async (value: 'is' | 'not') => {
+						rule.negated = value === 'not';
+						await this.plugin.saveSettings();
+					})
+				);
+
+			new Setting(ruleContentContainer)
 				.setName('Tag value')
 				.setDesc('Tag to match (without the # prefix). E.g., "project" or "status/done".')
 				.addText(text => {
@@ -1643,6 +1676,19 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 						});
 				});
 		} else if (rule.type === RuleType.Property) {
+			new Setting(ruleContentContainer)
+				.setName('Condition')
+				.setDesc('Choose whether this condition should be met or not met.')
+				.addDropdown(dropdown => dropdown
+					.addOption('is', 'is')
+					.addOption('not', 'not')
+					.setValue(rule.negated ? 'not' : 'is')
+					.onChange(async (value: 'is' | 'not') => {
+						rule.negated = value === 'not';
+						await this.plugin.saveSettings();
+					})
+				);
+
 			new Setting(ruleContentContainer)
 				.setName('Property name')
 				.setDesc('The name of the Obsidian property (frontmatter key) to match.')
