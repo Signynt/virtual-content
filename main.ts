@@ -1346,6 +1346,8 @@ export default class VirtualFooterPlugin extends Plugin {
 			multiConditionLogic: loadedRule.multiConditionLogic || 'any',
 			renderAboveProperties: loadedRule.renderAboveProperties !== undefined ? loadedRule.renderAboveProperties : undefined,
 			renderAboveBacklinks: loadedRule.renderAboveBacklinks !== undefined ? loadedRule.renderAboveBacklinks : undefined,
+			dataviewQuery: loadedRule.dataviewQuery || '',
+			footerFilePath: loadedRule.footerFilePath || '', // Retained name for compatibility
 		};
 
 		// Populate type-specific fields
@@ -1943,9 +1945,9 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 
 			new Setting(ruleContentContainer)
 				.setName('Dataview query')
-				.setDesc('Enter a Dataview pages query to match notes. Notes that match will have the virtual content applied.')
+				.setDesc('Enter a Dataview LIST query to match notes where this rule should apply.')
 				.addTextArea(text => text
-					.setPlaceholder('e.g., #tag or from "folder" or where status="complete"')
+					.setPlaceholder('LIST FROM "References/Authors" WHERE startswith(file.name, "Test") OR startswith(file.name, "Example")')
 					.setValue(rule.dataviewQuery || '')
 					.onChange((value) => {
 						rule.dataviewQuery = value;
@@ -1954,7 +1956,7 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 
 			const infoDiv = ruleContentContainer.createDiv('dataview-info');
 			infoDiv.createEl('p', { 
-				text: 'Note: Dataview plugin must be installed for this rule type to work.',
+				text: 'Note: The Dataview plugin must be installed for this rule type to work.',
 				cls: 'setting-item-description'
 			});
 		}
