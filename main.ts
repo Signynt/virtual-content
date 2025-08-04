@@ -22,6 +22,7 @@ enum RuleType {
 	Tag = 'tag',
 	Property = 'property',
 	Multi = 'multi',
+	Dataview = 'dataview',
 }
 
 /** Defines the source of the content for a rule (e.g., direct text input or a markdown file). */
@@ -91,6 +92,8 @@ interface Rule {
 	conditions?: SubCondition[];
 	/** For 'multi' type: specifies whether ANY or ALL conditions must be met. Defaults to 'any'. */
 	multiConditionLogic?: 'any' | 'all';
+	/** For 'dataview' type: the Dataview query to use for matching files. */
+	dataviewQuery?: string;
 	/** The source from which to get the content (direct text or a file). */
 	contentSource: ContentSource;
 	/** Direct text content if contentSource is 'text'. */
@@ -1071,6 +1074,10 @@ export default class VirtualFooterPlugin extends Plugin {
 					}
 				}
 			}
+			// --- Match by Dataview Query ---
+			else if (currentRule.type === RuleType.Dataview) {
+				isMatch = await this._checkDataviewMatch(file, currentRule.dataviewQuery || '');
+			}
 
 			// Apply negation to the main rule if specified (for non-multi rules)
 			if (currentRule.type !== RuleType.Multi && currentRule.negated) {
@@ -1145,6 +1152,52 @@ export default class VirtualFooterPlugin extends Plugin {
 			}
 		}
 		return false;
+	}
+
+	/**
+	 * Checks if a file matches a Dataview query rule
+	 * @param file The file to check against the dataview query
+	 * @param query The dataview query string
+	 * @returns True if the file matches the dataview query, false otherwise
+	 */
+	private async _checkDataviewMatch(file: TFile, query: string): Promise<boolean> {
+		// Check if dataview plugin exists
+		// @ts-ignore - Access plugins using bracket notation
+		const dataviewPlugin = this.app.plugins.plugins?.dataview;
+		if (!dataviewPlugin) {
+			console.warn("VirtualFooter: Dataview plugin is required for dataview rules but is not installed or enabled.");
+			return false;
+		}
+		
+		try {
+			const dataviewApi = dataviewPlugin.api;
+			if (!dataviewApi) {
+				console.warn("VirtualFooter: Cannot access Dataview API.");
+				return false;
+			}
+			
+			// Execute the query against the active file
+			const results = await dataviewApi.query(query);
+
+			// Dataview API returns a Success object with a 'successful' flag and 'value' property
+			if (!results || !results.successful || !results.value || !Array.isArray(results.value.values)) {
+				return false;
+			}
+
+			// Extract file paths from the results
+			const resultPaths: string[] = [];
+			for (const page of results.value.values) {
+				if (page.path) {
+					resultPaths.push(page.path);
+			 }
+			}
+
+			// Check if current file path is in the results
+			return resultPaths.includes(file.path);
+		} catch (error) {
+			console.error(`VirtualFooter: Error executing Dataview query: ${query}`, error);
+			return false;
+		}
 	}
 
 	/**
@@ -1311,7 +1364,7 @@ export default class VirtualFooterPlugin extends Plugin {
 
 		// Populate content source-specific fields
 		if (migratedRule.contentSource === ContentSource.File) {
-			migratedRule.footerFilePath = loadedRule.footerFilePath || ''; // Retain name for compatibility
+			migratedRule.footerFilePath = loadedRule.footerFilePath || ''; // Retained name for compatibility
 		}
 		return migratedRule; // Normalization will happen after migration
 	}
@@ -1339,6 +1392,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		delete rule.propertyValue;
 		delete rule.conditions;
 		delete rule.multiConditionLogic;
+		delete rule.dataviewQuery;
 
 		// Normalize based on RuleType, using values from the original rule if they exist
 		if (rule.type === RuleType.Folder) {
@@ -1354,6 +1408,8 @@ export default class VirtualFooterPlugin extends Plugin {
 		} else if (rule.type === RuleType.Multi) {
 			rule.conditions = Array.isArray(originalRule.conditions) ? originalRule.conditions : [];
 			rule.multiConditionLogic = originalRule.multiConditionLogic === 'all' ? 'all' : 'any';
+		} else if (rule.type === RuleType.Dataview) {
+			rule.dataviewQuery = originalRule.dataviewQuery === undefined ? '' : originalRule.dataviewQuery;
 		}
 
 		// Normalize content source and related fields
@@ -1703,9 +1759,9 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 		new Setting(ruleContentContainer)
 			.setName('Enabled')
 			.setDesc('If disabled, this rule will not be applied.')
-			.addToggle(toggle => toggle
+			.addToggle((toggle: any) => toggle
 				.setValue(rule.enabled!) // normalizeRule ensures 'enabled' is boolean
-				.onChange(async (value) => {
+				.onChange(async (value: boolean) => {
 					rule.enabled = value;
 					await this.plugin.saveSettings();
 				}));
@@ -1719,6 +1775,7 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 				.addOption(RuleType.Tag, 'Tag')
 				.addOption(RuleType.Property, 'Property')
 				.addOption(RuleType.Multi, 'Multi-condition')
+				.addOption(RuleType.Dataview, 'Dataview')
 				.setValue(rule.type)
 				.onChange(async (value: string) => {
 					rule.type = value as RuleType;
@@ -1870,6 +1927,36 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 					}));
 		} else if (rule.type === RuleType.Multi) {
 			this.renderMultiConditionControls(rule, ruleContentContainer);
+		} else if (rule.type === RuleType.Dataview) {
+			new Setting(ruleContentContainer)
+				.setName('Condition')
+				.setDesc('Choose whether this condition should be met or not met.')
+				.addDropdown(dropdown => dropdown
+					.addOption('is', 'is')
+					.addOption('not', 'not')
+					.setValue(rule.negated ? 'not' : 'is')
+					.onChange(async (value: 'is' | 'not') => {
+						rule.negated = value === 'not';
+						await this.plugin.saveSettings();
+					})
+				);
+
+			new Setting(ruleContentContainer)
+				.setName('Dataview query')
+				.setDesc('Enter a Dataview pages query to match notes. Notes that match will have the virtual content applied.')
+				.addTextArea(text => text
+					.setPlaceholder('e.g., #tag or from "folder" or where status="complete"')
+					.setValue(rule.dataviewQuery || '')
+					.onChange((value) => {
+						rule.dataviewQuery = value;
+						this.debouncedSave();
+					}));
+
+			const infoDiv = ruleContentContainer.createDiv('dataview-info');
+			infoDiv.createEl('p', { 
+				text: 'Note: Dataview plugin must be installed for this rule type to work.',
+				cls: 'setting-item-description'
+			});
 		}
 
 		// --- Content Source Settings ---
