@@ -1,7 +1,7 @@
 {
 	"id": "virtual-footer",
 	"name": "Virtual Content",
-	"version": "1.0.20",
+	"version": "1.0.21",
 	"minAppVersion": "0.15.0",
 	"description": "Display markdown text (including dataview queries or Obsidian bases) at the bottom, top or in the sidebar for all notes which match a specified rule, without modifying them.",
 	"author": "Signynt",
