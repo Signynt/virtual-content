@@ -10,6 +10,7 @@ This is especially useful if you have many files with the same dataview block. I
 - Lets you define rules using folderes, tags and properties
 	- Rules can be set to include or exclude subfolders and subtags (recursive matching)
 	- Multi-condition rules are possible, allowing you to define multiple conditions for one rule (using AND/OR)
+	- Dataview filters can be used to create complex rules
 - Lets you select wether the "virtual content" gets added as a footer (end of file), a header (below properties) or in the sidebar
 	- Lets you choose if all sidebar "virtual content" gets added to the same sidebar tab, or if it should be shown in it's own tab
 - Allows for "virtual content" to be defined in the plugin settings, or in a markdown file
@@ -115,6 +116,14 @@ You can also use Virtual Content to display dataview (or anything else) in the s
 Just select the "Sidebar" option in the settings, and use the "Open virtual content in sidebar" command.
 
 ![Untitled](https://github.com/user-attachments/assets/0fa7067a-596e-422b-b676-3f435fa1d49b)
+
+### Applying complex rules using Dataview
+You can use Dataview queries to create complex rules. For example, you can create a rule that applies to all notes in a specific folder, but only if they begin with a certain prefix.
+
+Example dataview rule:
+```
+LIST FROM "References/Authors" WHERE startswith(file.name, "Test") OR startswith(file.name, "Example")
+```
 
 ## Limitations
 
