@@ -1181,6 +1181,8 @@ export default class VirtualFooterPlugin extends Plugin {
 
 			// Dataview API returns a Success object with a 'successful' flag and 'value' property
 			if (!results || !results.successful || !results.value || !Array.isArray(results.value.values)) {
+				// If the query did not return valid results, log and return false
+				console.warn(`VirtualFooter: Dataview query did not return valid results for query: ${query} in file: ${file.path} Dataview error:`, results);
 				return false;
 			}
 
