@@ -119,10 +119,15 @@ Just select the "Sidebar" option in the settings, and use the "Open virtual cont
 
 ### Applying complex rules using Dataview
 You can use Dataview queries to create complex rules. For example, you can create a rule that applies to all notes in a specific folder, but only if they begin with a certain prefix.
+It is recommended to use the Dataview option for very complex rules, as it allows for more flexibility and power than the built-in multi-condition rules.
 
-Example dataview rule:
+Example dataview rules:
 ```
 LIST FROM "References/Authors" WHERE startswith(file.name, "Test") OR startswith(file.name, "Example")
+```
+
+```
+LIST FROM "Tasks/Reports" WHERE (Tags = work AND status = "done") OR progress > 50
 ```
 
 ## Limitations
