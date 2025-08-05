@@ -2152,9 +2152,18 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
-		new Setting(containerEl)
+		const conditionsSetting = new Setting(containerEl)
 			.setName('Conditions')
 			.setDesc('This rule will apply if the selected logic is met by the following conditions.');
+
+		// Add the hint as a separate paragraph below the description
+		const descEl = conditionsSetting.settingEl.querySelector('.setting-item-description');
+		if (descEl) {
+			const hintEl = document.createElement('p');
+			hintEl.className = 'setting-item-description';
+			hintEl.innerText = 'Hint: For very complex rules, consider using the Dataview rule type instead.';
+			descEl.insertAdjacentElement('afterend', hintEl);
+		}
 
 		const conditionsContainer = containerEl.createDiv('virtual-footer-conditions-container');
 		rule.conditions?.forEach((condition, index) => {
