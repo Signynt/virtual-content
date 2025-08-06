@@ -637,8 +637,29 @@ export default class VirtualFooterPlugin extends Plugin {
 		component.load();
 		groupDiv.component = component;
 
-		// Render Markdown content
-		await MarkdownRenderer.render(this.app, combinedContentText, groupDiv, sourcePath, component);
+		// Try to render the Markdown content with retry logic for early load errors
+		try {
+			await MarkdownRenderer.render(this.app, combinedContentText, groupDiv, sourcePath, component);
+		} catch (error) {
+			console.log("VirtualFooter: Error during initial render, will retry after delay:", error);
+			
+			// Add a placeholder while waiting to retry
+			const placeholderEl = groupDiv.createEl("div", { cls: "virtual-footer-loading" });
+			placeholderEl.createEl("p", { text: "Loading virtual content..." });
+			
+			// Schedule a retry after a delay to allow other plugins to initialize
+			setTimeout(async () => {
+				try {
+					placeholderEl.remove();
+					await MarkdownRenderer.render(this.app, combinedContentText, groupDiv, sourcePath, component);
+					this.attachInternalLinkHandlers(groupDiv, sourcePath, component);
+				} catch (secondError) {
+					console.error("VirtualFooter: Failed to render content after retry:", secondError);
+					const errorEl = groupDiv.createEl("div", { cls: "virtual-footer-error" });
+					errorEl.createEl("p", { text: "Error rendering virtual content. Please reload the page or check the content for errors." });
+				}
+			}, 2000); // 2 second delay
+		}
 
 		let injectionSuccessful = false;
 		const viewState = view.getState();
