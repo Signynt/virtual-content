@@ -122,6 +122,8 @@ interface VirtualFooterSettings {
 	refreshOnFileOpen?: boolean;
 	/** Whether to render content in source mode. Defaults to false. */
 	renderInSourceMode?: boolean;
+	/** Whether to refresh the view when note metadata changes. Defaults to false. */
+	refreshOnMetadataChange?: boolean;
 }
 
 /**
@@ -154,6 +156,7 @@ const DEFAULT_SETTINGS: VirtualFooterSettings = {
 	}],
 	refreshOnFileOpen: false, // Default to false
 	renderInSourceMode: false, // Default to false
+	refreshOnMetadataChange: false, // Default to false
 };
 
 // CSS Classes for styling and identifying plugin-generated elements
@@ -387,6 +390,19 @@ export default class VirtualFooterPlugin extends Plugin {
 			this.app.workspace.on('active-leaf-change', handleFocusChange)
 		);
 
+		// Listen for metadata changes on the current file
+		this.registerEvent(
+			this.app.metadataCache.on('changed', (file) => {
+				// Only refresh if the metadata change setting is enabled
+				if (this.settings.refreshOnMetadataChange && this.initialLayoutReadyProcessed) {
+					const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+					// Only refresh if the changed file is the currently active one
+					if (activeView && activeView.file && file.path === activeView.file.path) {
+						this.handleActiveViewChange();
+					}
+				}
+			})
+		);
 
 		// Initial processing for any currently active view, once layout is ready
 		this.app.workspace.onLayoutReady(() => {
@@ -1287,6 +1303,10 @@ export default class VirtualFooterPlugin extends Plugin {
 			if (typeof loadedData.renderInSourceMode === 'boolean') {
 				this.settings.renderInSourceMode = loadedData.renderInSourceMode;
 			}
+			// Load the new refreshOnMetadataChange setting if it exists
+			if (typeof loadedData.refreshOnMetadataChange === 'boolean') {
+				this.settings.refreshOnMetadataChange = loadedData.refreshOnMetadataChange;
+			}
 		}
 
 		// Ensure there's at least one rule, and all rules are normalized
@@ -1304,6 +1324,9 @@ export default class VirtualFooterPlugin extends Plugin {
 		}
 		if (typeof this.settings.renderInSourceMode !== 'boolean') {
 			this.settings.renderInSourceMode = DEFAULT_SETTINGS.renderInSourceMode!;
+		}
+		if (typeof this.settings.refreshOnMetadataChange !== 'boolean') {
+			this.settings.refreshOnMetadataChange = DEFAULT_SETTINGS.refreshOnMetadataChange!;
 		}
 	}
 
@@ -1657,6 +1680,16 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 				.setValue(this.plugin.settings.refreshOnFileOpen!) // Value is ensured by loadSettings
 				.onChange(async (value) => {
 					this.plugin.settings.refreshOnFileOpen = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Refresh on metadata change')
+			.setDesc('If enabled, virtual content will refresh when the current note\'s metadata (frontmatter, tags) changes. This is useful for rules that depend on properties or tags and need to update immediately when those values change.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.refreshOnMetadataChange!)
+				.onChange(async (value) => {
+					this.plugin.settings.refreshOnMetadataChange = value;
 					await this.plugin.saveSettings();
 				}));
 		
