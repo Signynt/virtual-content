@@ -130,6 +130,38 @@ LIST FROM "References/Authors" WHERE startswith(file.name, "Test") OR startswith
 LIST FROM "Tasks/Reports" WHERE (Tags = work AND status = "done") OR progress > 50
 ```
 
+### Showing virtual content in an expandable pop up
+Check out [this issue](https://github.com/Signynt/virtual-content/issues/33) to see how a user turned the virtual content into a pop up which displays when you hover over it!
+
+https://github.com/user-attachments/assets/2125c038-9298-4c8b-9072-d40888882635
+
+```css
+.daily-note .virtual-footer-dynamic-content-element.virtual-footer-header-group.virtual-footer-header-rendered-content{
+    position: absolute;
+    opacity: 0.3;
+    width: 800px !important;
+    border-radius: 12px;
+    top: 300px;
+    left: -750px;
+    z-index: 1;
+    transition: all 0.4s ease; /* 所有属性添加0.2秒渐变效果 */
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    outline: 1px solid var(--background-modifier-border);
+
+    &:hover {
+        z-index: 100;
+        scale: 1.0;
+        opacity: 1.0;
+        background-color: var(--background-secondary);
+        transform: translate(756px, 0px);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        backdrop-filter: blur(10px);
+    }
+}
+```
+
+In the above snippet it's limited to `.daily-note` so that this style only applies to notes with `cssclasses: daily-note`.
+
 ## Limitations
 
 Links in the markdown text work natively when in Reading mode, however they don't in Live Preview, so I've added a workaround that gets most functionality back. This means that `left click` works to open the link in the current tab, and `middle mouse` and `ctrl/cmd + left click` works to open the link in a new tab. Right click currently doesn't work.
