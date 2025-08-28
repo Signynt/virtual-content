@@ -133,3 +133,6 @@ LIST FROM "Tasks/Reports" WHERE (Tags = work AND status = "done") OR progress > 
 ## Limitations
 
 Links in the markdown text work natively when in Reading mode, however they don't in Live Preview, so I've added a workaround that gets most functionality back. This means that `left click` works to open the link in the current tab, and `middle mouse` and `ctrl/cmd + left click` works to open the link in a new tab. Right click currently doesn't work.
+
+## Support
+You can send me a donation using [my Paypal link](https://paypal.me/VincenzoBarroso). Thanks for the support!
