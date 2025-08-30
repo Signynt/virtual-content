@@ -110,6 +110,8 @@ interface Rule {
 	renderAboveProperties?: boolean;
 	/** For 'footer' location: whether to render above the backlinks section. */
 	renderAboveBacklinks?: boolean;
+	/** Whether to show this rule's content in popover views. */
+	showInPopover?: boolean;
 }
 
 /**
@@ -153,6 +155,7 @@ const DEFAULT_SETTINGS: VirtualFooterSettings = {
 		multiConditionLogic: 'any',
 		renderAboveProperties: false,
 		renderAboveBacklinks: false,
+		showInPopover: true,
 	}],
 	refreshOnFileOpen: false, // Default to false
 	renderInSourceMode: false, // Default to false
@@ -327,6 +330,7 @@ export default class VirtualFooterPlugin extends Plugin {
 	private initialLayoutReadyProcessed = false;
 	private lastSidebarContent: { content: string, sourcePath: string } | null = null;
 	private lastSeparateTabContents: Map<string, { content: string, sourcePath: string }> = new Map();
+	private lastHoveredLink: HTMLElement | null = null;
 
 	/**
 	 * Called when the plugin is loaded.
@@ -404,6 +408,80 @@ export default class VirtualFooterPlugin extends Plugin {
 			})
 		);
 
+		// Listen for hover events to detect when popovers are created
+		this.registerDomEvent(document, 'mouseover', (event: MouseEvent) => {
+			const target = event.target as HTMLElement;
+			// Check if the target is a link that could trigger a popover
+			if (target.matches('a.internal-link, .internal-link a, [data-href]')) {
+				// Store the last hovered link for popover file path extraction
+				this.lastHoveredLink = target;
+				// Delay to allow popover to be created
+				setTimeout(() => {this.processPopoverViews();}, 100);
+			}
+		});
+
+		// Listen for clicks to detect when popovers might switch to editing mode
+		this.registerDomEvent(document, 'click', (event: MouseEvent) => {
+			const target = event.target as HTMLElement;
+			// Check if the click is within a popover
+			const popover = target.closest('.popover.hover-popover');
+			if (popover) {
+				//console.log("VirtualContent: Click detected in popover, checking for mode change");
+				// Delay to allow any mode changes to complete
+				setTimeout(() => {this.processPopoverViews();}, 150);
+			}
+		});
+
+		// Also listen for DOM mutations to catch dynamically created popovers
+		const popoverObserver = new MutationObserver((mutations) => {
+			for (const mutation of mutations) {
+				if (mutation.type === 'childList') {
+					mutation.addedNodes.forEach(node => {
+						if (node instanceof HTMLElement) {
+							// Check if a popover was added
+							if (node.classList.contains('popover') && node.classList.contains('hover-popover')) {
+								//console.log("VirtualContent: Popover created, processing views");
+								// Small delay to ensure the popover content is fully loaded
+								setTimeout(() => {this.processPopoverViews();}, 50);
+							}
+							// Also check for popovers added within other elements
+							const popovers = node.querySelectorAll('.popover.hover-popover');
+							if (popovers.length > 0) {
+								//console.log("VirtualContent: Popover(s) found in added content, processing views");
+								setTimeout(() => {this.processPopoverViews();}, 50);
+							}
+						}
+					});
+				}
+				// Listen for attribute changes that might indicate mode switching in popovers
+				if (mutation.type === 'attributes' && mutation.target instanceof HTMLElement) {
+					const target = mutation.target;
+					// Check if this is a popover that gained or lost the is-editing class
+					if (target.classList.contains('popover') && target.classList.contains('hover-popover')) {
+						if (mutation.attributeName === 'class') {
+							const hasEditingClass = target.classList.contains('is-editing');
+							//console.log(`VirtualContent: Popover mode changed, is-editing: ${hasEditingClass}`);
+							//setTimeout(() => {this.processPopoverViews();}, 100); // Slightly longer delay for mode changes
+						}
+					}
+				}
+			}
+		});
+
+		// Observe the entire document for popover creation
+		popoverObserver.observe(document.body, {
+			childList: true,
+			subtree: true
+		});
+
+		// Store the observer so we can disconnect it on unload
+		this.registerEvent({ 
+			// @ts-ignore - Store observer reference for cleanup
+			_observer: popoverObserver,
+			// @ts-ignore - Custom cleanup method
+			destroy: () => popoverObserver.disconnect()
+		} as any);
+
 		// Initial processing for any currently active view, once layout is ready
 		this.app.workspace.onLayoutReady(() => {
 			if (!this.initialLayoutReadyProcessed) {
@@ -454,6 +532,357 @@ export default class VirtualFooterPlugin extends Plugin {
 	}
 
 	/**
+	 * Checks if a MarkdownView is displayed within a popover (hover preview).
+	 * @param view The MarkdownView to check.
+	 * @returns True if the view is in a popover, false otherwise.
+	 */
+	private isInPopover(view: MarkdownView): boolean {
+		// Check if the view's container element is within a popover
+		let element: HTMLElement | null = view.containerEl;
+		
+		// Debug: Log the container element and its classes
+		//console.log("VirtualContent: Checking popover for view container:", view.containerEl.className);
+		
+		while (element) {
+			// Check for popover classes
+			if (element.classList.contains('popover') && element.classList.contains('hover-popover')) {
+				//console.log("VirtualContent: Found popover via direct popover classes");
+				return true;
+			}
+			// Also check for markdown-embed class which indicates an embedded view (often in popovers)
+			if (element.classList.contains('markdown-embed')) {
+				//console.log("VirtualContent: Found markdown-embed, checking for parent popover");
+				// If it's a markdown-embed, check if it's inside a popover
+				let parent = element.parentElement;
+				while (parent) {
+					if (parent.classList.contains('popover') && parent.classList.contains('hover-popover')) {
+						console.log("VirtualContent: Found popover via markdown-embed parent");
+						return true;
+					}
+					parent = parent.parentElement;
+				}
+			}
+			element = element.parentElement;
+		}
+		//console.log("VirtualContent: Not a popover view");
+		return false;
+	}
+
+	/**
+	 * Processes any popover views that might be open but haven't been processed yet.
+	 */
+	private processPopoverViews(): void {
+		// Find all popover elements in the DOM
+		const popovers = document.querySelectorAll('.popover.hover-popover');
+		
+		popovers.forEach(popover => {
+			// Look for markdown views within each popover
+			const markdownEmbed = popover.querySelector('.markdown-embed');
+			if (markdownEmbed) {
+				//console.log("VirtualContent: Found markdown-embed in popover, processing directly");
+				// Process the popover content directly
+				this.processPopoverDirectly(popover as HTMLElement);
+			}
+		});
+	}
+
+	/**
+	 * Process popover content directly when we can't find the MarkdownView
+	 */
+	private processPopoverDirectly(popover: HTMLElement): void {
+		console.log("VirtualContent: Processing popover directly");
+		
+		// Try to extract the file path from the popover
+		const markdownEmbed = popover.querySelector('.markdown-embed');
+		if (!markdownEmbed) {
+			//console.log("VirtualContent: No markdown-embed found in popover");
+			return;
+		}
+		
+		let filePath: string | null = null;
+		
+		// Method 1: Get the title from inline-title and resolve to file path
+		const inlineTitle = popover.querySelector('.inline-title');
+		if (inlineTitle) {
+			const title = inlineTitle.textContent?.trim();
+			//console.log("VirtualContent: Found inline-title:", title);
+			
+			if (title) {
+				// Try to resolve the title to a file path using Obsidian's API
+				const file = this.app.metadataCache.getFirstLinkpathDest(title, '');
+				if (file) {
+					filePath = file.path;
+					//console.log("VirtualContent: Resolved title to file path:", filePath);
+				} else {
+					// If direct resolution fails, try with .md extension
+					const fileWithExt = this.app.metadataCache.getFirstLinkpathDest(title + '.md', '');
+					if (fileWithExt) {
+						filePath = fileWithExt.path;
+						//console.log("VirtualContent: Resolved title with .md extension to file path:", filePath);
+					} else {
+						//console.log("VirtualContent: Could not resolve title to file path");
+					}
+				}
+			}
+		}
+			
+		//console.log("VirtualContent: Final extracted file path for direct processing:", filePath);
+		
+		if (filePath) {
+			// Remove any hash fragments or block references
+			const cleanPath = filePath.split('#')[0].split('^')[0];
+			//console.log("VirtualContent: Cleaned file path:", cleanPath);
+			// Process the popover content directly
+			this.injectContentIntoPopover(popover, cleanPath);
+		} else {
+			console.log("VirtualContent: Could not determine file path for popover");
+			// Log the DOM structure for debugging
+			console.log("VirtualContent: Popover DOM structure:", popover.innerHTML.substring(0, 1000));
+		}
+	}
+
+	/**
+	 * Directly inject virtual content into a popover
+	 */
+	private async injectContentIntoPopover(popover: HTMLElement, filePath: string): Promise<void> {
+		//console.log("VirtualContent: Directly injecting content into popover for:", filePath);
+		
+		try {
+			const applicableRulesWithContent = await this._getApplicableRulesAndContent(filePath);
+			
+			// Filter rules based on popover visibility setting
+			const filteredRules = applicableRulesWithContent.filter(({ rule }) => {
+				return rule.showInPopover !== false; // Show by default unless explicitly disabled
+			});
+			
+			if (filteredRules.length === 0) {
+				//console.log("VirtualContent: No applicable rules for popover");
+				return;
+			}
+			
+			// Find the markdown embed container
+			const markdownEmbed = popover.querySelector('.markdown-embed');
+			if (!markdownEmbed) return;
+			
+			// Group content by render location
+			const headerContentGroups: { normal: string[], aboveProperties: string[] } = { normal: [], aboveProperties: [] };
+			const footerContentGroups: { normal: string[], aboveBacklinks: string[] } = { normal: [], aboveBacklinks: [] };
+			const contentSeparator = "\n\n";
+			
+			for (const { rule, contentText } of filteredRules) {
+				if (!contentText || contentText.trim() === "") continue;
+				
+				if (rule.renderLocation === RenderLocation.Header) {
+					if (rule.renderAboveProperties) {
+						headerContentGroups.aboveProperties.push(contentText);
+					} else {
+						headerContentGroups.normal.push(contentText);
+					}
+				} else if (rule.renderLocation === RenderLocation.Footer) {
+					// For popovers, treat all footer content the same regardless of renderAboveBacklinks setting
+					// since backlinks don't exist in popovers
+					footerContentGroups.normal.push(contentText);
+				}
+				// Skip sidebar rules for popovers
+			}
+			
+			// Inject header content
+			if (headerContentGroups.normal.length > 0) {
+				const combinedContent = headerContentGroups.normal.join(contentSeparator);
+				await this.injectContentIntoPopoverSection(markdownEmbed as HTMLElement, combinedContent, 'header', false, filePath);
+			}
+			
+			if (headerContentGroups.aboveProperties.length > 0) {
+				const combinedContent = headerContentGroups.aboveProperties.join(contentSeparator);
+				await this.injectContentIntoPopoverSection(markdownEmbed as HTMLElement, combinedContent, 'header', true, filePath);
+			}
+			
+			// Inject footer content
+			if (footerContentGroups.normal.length > 0) {
+				const combinedContent = footerContentGroups.normal.join(contentSeparator);
+				await this.injectContentIntoPopoverSection(markdownEmbed as HTMLElement, combinedContent, 'footer', false, filePath);
+			}
+			
+		} catch (error) {
+			console.error("VirtualContent: Error processing popover directly:", error);
+		}
+	}
+
+	/**
+	 * Inject content into a specific section of a popover
+	 */
+	private async injectContentIntoPopoverSection(
+		container: HTMLElement, 
+		content: string, 
+		location: 'header' | 'footer', 
+		special: boolean, 
+		filePath: string
+	): Promise<void> {
+		const isHeader = location === 'header';
+		const cssClass = isHeader ? CSS_HEADER_GROUP_ELEMENT : CSS_FOOTER_GROUP_ELEMENT;
+		const specialClass = isHeader ? 'virtual-footer-above-properties' : 'virtual-footer-above-backlinks';
+		
+		// Create new content container
+		const groupDiv = document.createElement('div') as HTMLElementWithComponent;
+		groupDiv.className = `${CSS_DYNAMIC_CONTENT_ELEMENT} ${cssClass}`;
+		if (special) {
+			groupDiv.classList.add(specialClass);
+		}
+		
+		// Add additional CSS classes for consistency with main view injection
+		if (isHeader) {
+			groupDiv.classList.add(CSS_HEADER_RENDERED_CONTENT);
+		} else {
+			groupDiv.classList.add(CSS_FOOTER_RENDERED_CONTENT);
+			if (special) {
+				groupDiv.classList.add(CSS_ABOVE_BACKLINKS);
+			}
+		}
+		
+		// Create component for lifecycle management
+		const component = new Component();
+		component.load();
+		groupDiv.component = component;
+		
+		try {
+			// Render the content
+			await MarkdownRenderer.render(this.app, content, groupDiv, filePath, component);
+			this.attachInternalLinkHandlers(groupDiv, filePath, component);
+			
+			// Use the same logic as main view injection - find target parent using standard selectors
+			let targetParent: HTMLElement | null = null;
+			
+			// First, detect if we're in editing mode or preview mode
+			// Check if the popover container has the is-editing class
+			const popoverContainer = container.closest('.popover.hover-popover');
+			const isEditingMode = popoverContainer?.classList.contains('is-editing') || 
+								  container.querySelector(SELECTOR_EDITOR_SIZER) !== null;
+			//console.log(`VirtualContent: Popover is in ${isEditingMode ? 'editing' : 'preview'} mode`);
+			
+			if (isHeader) {
+				if (special) {
+					// Try to find metadata container first (same as main view logic)
+					targetParent = container.querySelector<HTMLElement>(SELECTOR_METADATA_CONTAINER);
+				}
+				// If no metadata container or special is false, use appropriate header area
+				if (!targetParent) {
+					if (isEditingMode) {
+						// In editing mode, we need to find the content container and insert before it
+						const cmContentContainer = container.querySelector<HTMLElement>(SELECTOR_LIVE_PREVIEW_CONTENT_CONTAINER);
+						if (cmContentContainer?.parentElement) {
+							// We'll handle the insertion differently for editing mode headers
+							targetParent = cmContentContainer.parentElement;
+						}
+					} else {
+						// In preview mode, use regular header area
+						targetParent = container.querySelector<HTMLElement>(SELECTOR_PREVIEW_HEADER_AREA);
+					}
+				}
+			} else { // Footer
+				if (special) {
+					// Try to find embedded backlinks first (same as main view logic)
+					targetParent = container.querySelector<HTMLElement>(SELECTOR_EMBEDDED_BACKLINKS);
+				}
+				// If no backlinks or special is false, use appropriate footer area
+				if (!targetParent) {
+					if (isEditingMode) {
+						// In editing mode, use editor sizer
+						targetParent = container.querySelector<HTMLElement>(SELECTOR_EDITOR_SIZER);
+					} else {
+						// In preview mode, try standard footer area first
+						targetParent = container.querySelector<HTMLElement>(SELECTOR_PREVIEW_FOOTER_AREA);
+						// Fallback for popovers: use markdown-preview-sizer if standard footer selectors don't exist
+						if (!targetParent) {
+							targetParent = container.querySelector<HTMLElement>('.markdown-preview-sizer.markdown-preview-section');
+						}
+					}
+				}
+			}
+			
+			if (targetParent) {
+				// Remove existing content of this type (same cleanup logic as main view)
+				if (isHeader && special) {
+					// Remove existing header content above properties
+					container.querySelectorAll(`.${CSS_HEADER_GROUP_ELEMENT}.virtual-footer-above-properties`).forEach(el => {
+						const holder = el as HTMLElementWithComponent;
+						holder.component?.unload();
+						el.remove();
+					});
+				} else if (isHeader && !special) {
+					// Remove existing normal header content
+					targetParent.querySelectorAll(`.${CSS_HEADER_GROUP_ELEMENT}:not(.virtual-footer-above-properties)`).forEach(el => {
+						const holder = el as HTMLElementWithComponent;
+						holder.component?.unload();
+						el.remove();
+					});
+				} else if (!isHeader && special) {
+					// Remove existing footer content above backlinks
+					container.querySelectorAll(`.${CSS_FOOTER_GROUP_ELEMENT}.virtual-footer-above-backlinks`).forEach(el => {
+						const holder = el as HTMLElementWithComponent;
+						holder.component?.unload();
+						el.remove();
+					});
+				} else if (!isHeader && !special) {
+					// Remove existing normal footer content
+					targetParent.querySelectorAll(`.${CSS_FOOTER_GROUP_ELEMENT}:not(.virtual-footer-above-backlinks)`).forEach(el => {
+						const holder = el as HTMLElementWithComponent;
+						holder.component?.unload();
+						el.remove();
+					});
+				}
+				
+				// Insert using mode-specific logic
+				if (isHeader && !special) {
+					if (isEditingMode && targetParent.querySelector(SELECTOR_LIVE_PREVIEW_CONTENT_CONTAINER)) {
+						// For editing mode headers, insert before the content container
+						const cmContentContainer = targetParent.querySelector<HTMLElement>(SELECTOR_LIVE_PREVIEW_CONTENT_CONTAINER);
+						if (cmContentContainer) {
+							targetParent.insertBefore(groupDiv, cmContentContainer);
+						} else {
+							targetParent.appendChild(groupDiv);
+						}
+					} else {
+						// For preview mode headers, append to header area
+						targetParent.appendChild(groupDiv);
+					}
+				} else if (!isHeader && !special) {
+					// For footer content
+					if (isEditingMode) {
+						// In editing mode, append to editor sizer
+						targetParent.appendChild(groupDiv);
+					} else {
+						// In preview mode, check if we're using the popover fallback selector
+						if (targetParent.matches('.markdown-preview-sizer.markdown-preview-section')) {
+							// Insert after the markdown-preview-sizer, not inside it
+							targetParent.parentElement?.insertBefore(groupDiv, targetParent.nextSibling);
+						} else {
+							// For regular footer areas, append inside
+							targetParent.appendChild(groupDiv);
+						}
+					}
+				} else {
+					// Insert before properties or backlinks (same as main view)
+					targetParent.parentElement?.insertBefore(groupDiv, targetParent);
+				}
+				
+				//console.log(`VirtualContent: Successfully injected ${location} content into popover using standard selectors`);
+			} else {
+				//console.log(`VirtualContent: Target parent not found for ${location} injection in popover, falling back to container`);
+				// Fallback to simple container injection if selectors don't match
+				if (isHeader) {
+					container.insertBefore(groupDiv, container.firstChild);
+				} else {
+					container.appendChild(groupDiv);
+				}
+			}
+			
+		} catch (error) {
+			console.error("VirtualContent: Error rendering content for popover:", error);
+			component.unload();
+		}
+	}
+
+	/**
 	 * Processes a given Markdown view to inject or update dynamic content.
 	 * @param view The MarkdownView to process.
 	 */
@@ -470,8 +899,19 @@ export default class VirtualFooterPlugin extends Plugin {
 			return; // No view or file to process
 		}
 
+		// Check if this is a popover view
+		const isPopoverView = this.isInPopover(view);
+
 		await this.removeDynamicContentFromView(view); // Clear existing content first
 		const applicableRulesWithContent = await this._getApplicableRulesAndContent(view.file.path);
+
+		// Filter rules based on popover visibility setting
+		const filteredRules = applicableRulesWithContent.filter(({ rule }) => {
+			if (isPopoverView && rule.showInPopover === false) {
+				return false; // Skip this rule in popover views
+			}
+			return true;
+		});
 
 		const viewState = view.getState();
 		let combinedHeaderText = "";
@@ -485,7 +925,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		const headerContentGroups: { normal: string[], aboveProperties: string[] } = { normal: [], aboveProperties: [] };
 		const footerContentGroups: { normal: string[], aboveBacklinks: string[] } = { normal: [], aboveBacklinks: [] };
 		
-		for (const { rule, contentText, index } of applicableRulesWithContent) {
+		for (const { rule, contentText, index } of filteredRules) {
 			if (!contentText || contentText.trim() === "") continue; // Skip empty content
 
 			if (rule.renderLocation === RenderLocation.Header) {
@@ -1394,6 +1834,7 @@ export default class VirtualFooterPlugin extends Plugin {
 			renderAboveBacklinks: loadedRule.renderAboveBacklinks !== undefined ? loadedRule.renderAboveBacklinks : undefined,
 			dataviewQuery: loadedRule.dataviewQuery || '',
 			footerFilePath: loadedRule.footerFilePath || '', // Retained name for compatibility
+			showInPopover: loadedRule.showInPopover !== undefined ? loadedRule.showInPopover : true,
 		};
 
 		// Populate type-specific fields
@@ -1491,6 +1932,9 @@ export default class VirtualFooterPlugin extends Plugin {
 			delete rule.renderAboveProperties;
 			delete rule.renderAboveBacklinks;
 		}
+
+		// Normalize popover visibility setting
+		rule.showInPopover = typeof originalRule.showInPopover === 'boolean' ? originalRule.showInPopover : true;
 	}
 
 	/**
@@ -2130,6 +2574,17 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					}));
 		}
+		
+		// --- Popover Visibility Setting ---
+		new Setting(ruleContentContainer)
+			.setName('Show in popover views')
+			.setDesc('If enabled, this rule\'s content will be shown when viewing notes in hover popovers. If disabled, the content will be hidden in popover views.')
+			.addToggle(toggle => toggle
+				.setValue(rule.showInPopover !== undefined ? rule.showInPopover : true)
+				.onChange(async (value) => {
+					rule.showInPopover = value;
+					await this.plugin.saveSettings();
+				}));
 		
 		// --- Rule Actions: Reorder and Delete ---
 		const ruleActionsSetting = new Setting(ruleContentContainer)
