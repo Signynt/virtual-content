@@ -334,6 +334,7 @@ export default class VirtualFooterPlugin extends Plugin {
 	private lastSidebarContent: { content: string, sourcePath: string } | null = null;
 	private lastSeparateTabContents: Map<string, { content: string, sourcePath: string }> = new Map();
 	private lastHoveredLink: HTMLElement | null = null;
+	private popoverObserver: MutationObserver | null = null;
 
 	/**
 	 * Called when the plugin is loaded.
@@ -436,7 +437,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		});
 
 		// Also listen for DOM mutations to catch dynamically created popovers
-		const popoverObserver = new MutationObserver((mutations) => {
+		this.popoverObserver = new MutationObserver((mutations) => {
 			for (const mutation of mutations) {
 				if (mutation.type === 'childList') {
 					mutation.addedNodes.forEach(node => {
@@ -472,18 +473,12 @@ export default class VirtualFooterPlugin extends Plugin {
 		});
 
 		// Observe the entire document for popover creation
-		popoverObserver.observe(document.body, {
-			childList: true,
-			subtree: true
-		});
-
-		// Store the observer so we can disconnect it on unload
-		this.registerEvent({ 
-			// @ts-ignore - Store observer reference for cleanup
-			_observer: popoverObserver,
-			// @ts-ignore - Custom cleanup method
-			destroy: () => popoverObserver.disconnect()
-		} as any);
+		if (this.popoverObserver) {
+			this.popoverObserver.observe(document.body, {
+				childList: true,
+				subtree: true
+			});
+		}
 
 		// Initial processing for any currently active view, once layout is ready
 		this.app.workspace.onLayoutReady(() => {
@@ -499,6 +494,7 @@ export default class VirtualFooterPlugin extends Plugin {
 	 * Cleans up all injected content and observers.
 	 */
 	async onunload() {
+		this.popoverObserver?.disconnect();
 		this.app.workspace.detachLeavesOfType(VIRTUAL_CONTENT_VIEW_TYPE);
 		this.settings.rules.forEach((rule, index) => {
 			if (rule.renderLocation === RenderLocation.Sidebar && rule.showInSeparateTab) {
