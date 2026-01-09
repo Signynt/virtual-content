@@ -554,12 +554,12 @@ export default class VirtualFooterPlugin extends Plugin {
 			}
 			// Also check for markdown-embed class which indicates an embedded view (often in popovers)
 			if (element.classList.contains('markdown-embed')) {
-				//console.log("VirtualContent: Found markdown-embed, checking for parent popover");
+				// console.log("VirtualContent: Found markdown-embed, checking for parent popover");
 				// If it's a markdown-embed, check if it's inside a popover
 				let parent = element.parentElement;
 				while (parent) {
 					if (parent.classList.contains('popover') && parent.classList.contains('hover-popover')) {
-						console.log("VirtualContent: Found popover via markdown-embed parent");
+						// console.log("VirtualContent: Found popover via markdown-embed parent");
 						return true;
 					}
 					parent = parent.parentElement;
@@ -593,7 +593,7 @@ export default class VirtualFooterPlugin extends Plugin {
 	 * Process popover content directly when we can't find the MarkdownView
 	 */
 	private processPopoverDirectly(popover: HTMLElement): void {
-		console.log("VirtualContent: Processing popover directly");
+		// console.log("VirtualContent: Processing popover directly");
 		
 		// Try to extract the file path from the popover
 		const markdownEmbed = popover.querySelector('.markdown-embed');
@@ -638,9 +638,9 @@ export default class VirtualFooterPlugin extends Plugin {
 			// Process the popover content directly
 			this.injectContentIntoPopover(popover, cleanPath);
 		} else {
-			console.log("VirtualContent: Could not determine file path for popover");
-			// Log the DOM structure for debugging
-			console.log("VirtualContent: Popover DOM structure:", popover.innerHTML.substring(0, 1000));
+			// console.log("VirtualContent: Could not determine file path for popover");
+			// // Log the DOM structure for debugging
+			// console.log("VirtualContent: Popover DOM structure:", popover.innerHTML.substring(0, 1000));
 		}
 	}
 
