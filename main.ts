@@ -126,6 +126,8 @@ interface VirtualFooterSettings {
 	renderInSourceMode?: boolean;
 	/** Whether to refresh the view when note metadata changes. Defaults to false. */
 	refreshOnMetadataChange?: boolean;
+	/** Whether to treat property values as links for matching file targets. */
+	smartPropertyLinks?: boolean;
 }
 
 /**
@@ -160,6 +162,7 @@ const DEFAULT_SETTINGS: VirtualFooterSettings = {
 	refreshOnFileOpen: false, // Default to false
 	renderInSourceMode: false, // Default to false
 	refreshOnMetadataChange: false, // Default to false
+	smartPropertyLinks: false, // Default to false
 };
 
 // CSS Classes for styling and identifying plugin-generated elements
@@ -1618,6 +1621,38 @@ export default class VirtualFooterPlugin extends Plugin {
 				return true;
 			}
 			
+			// Smart Property Links Logic
+			if (this.settings.smartPropertyLinks) {
+				const resolveFile = (val: string) => {
+					if (!val) return null;
+					let linktext = val.trim();
+					// Basic wiki-link cleaning: [[Link|Alias]] -> Link
+					if (linktext.startsWith('[[') && linktext.endsWith(']]')) {
+						linktext = linktext.substring(2, linktext.length - 2);
+						const pipeIndex = linktext.indexOf('|');
+						if (pipeIndex >= 0) {
+							linktext = linktext.substring(0, pipeIndex);
+						}
+					}
+					return this.app.metadataCache.getFirstLinkpathDest(linktext, '');
+				};
+
+				const expectedFile = resolveFile(expectedPropertyValue);
+				if (expectedFile) {
+					const checkValue = (val: any) => {
+						if (typeof val !== 'string') return false;
+						const actualFile = resolveFile(val);
+						return actualFile !== null && actualFile.path === expectedFile.path;
+					};
+
+					if (Array.isArray(actualPropertyValue)) {
+						if (actualPropertyValue.some(checkValue)) return true;
+					} else {
+						if (checkValue(actualPropertyValue)) return true;
+					}
+				}
+			}
+			
 			// Otherwise, check for exact value match
 			if (typeof actualPropertyValue === 'string') {
 				return actualPropertyValue === expectedPropertyValue;
@@ -1768,6 +1803,10 @@ export default class VirtualFooterPlugin extends Plugin {
 			if (typeof loadedData.refreshOnMetadataChange === 'boolean') {
 				this.settings.refreshOnMetadataChange = loadedData.refreshOnMetadataChange;
 			}
+			// Load the new smartPropertyLinks setting if it exists
+			if (typeof loadedData.smartPropertyLinks === 'boolean') {
+				this.settings.smartPropertyLinks = loadedData.smartPropertyLinks;
+			}
 		}
 
 		// Ensure there's at least one rule, and all rules are normalized
@@ -1788,6 +1827,9 @@ export default class VirtualFooterPlugin extends Plugin {
 		}
 		if (typeof this.settings.refreshOnMetadataChange !== 'boolean') {
 			this.settings.refreshOnMetadataChange = DEFAULT_SETTINGS.refreshOnMetadataChange!;
+		}
+		if (typeof this.settings.smartPropertyLinks !== 'boolean') {
+			this.settings.smartPropertyLinks = DEFAULT_SETTINGS.smartPropertyLinks!;
 		}
 	}
 
@@ -2155,6 +2197,16 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 				.setValue(this.plugin.settings.refreshOnMetadataChange!)
 				.onChange(async (value) => {
 					this.plugin.settings.refreshOnMetadataChange = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Smart property links')
+			.setDesc('If enabled, property conditions that look like links will match against the resolved file. This allows matching aliases or different link formats (e.g. [[Note]] matches [[Note|Alias]]).')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.smartPropertyLinks!)
+				.onChange(async (value) => {
+					this.plugin.settings.smartPropertyLinks = value;
 					await this.plugin.saveSettings();
 				}));
 		
