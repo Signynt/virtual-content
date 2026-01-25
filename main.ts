@@ -335,8 +335,6 @@ export default class VirtualFooterPlugin extends Plugin {
 	private lastSeparateTabContents: Map<string, { content: string, sourcePath: string }> = new Map();
 	private lastHoveredLink: HTMLElement | null = null;
 	private popoverObserver: MutationObserver | null = null;
-	/** Track the last processed file to avoid redundant refreshes on layout-change */
-	private lastProcessedFile: string | null = null;
 
 	/**
 	 * Called when the plugin is loaded.
@@ -375,24 +373,9 @@ export default class VirtualFooterPlugin extends Plugin {
 		// Define event handlers
 		const handleViewUpdate = () => {
 			// Always trigger an update if the layout is ready.
-			// Used for file-open.
+			// Used for file-open and layout-change.
 			if (this.initialLayoutReadyProcessed) {
 				this.handleActiveViewChange();
-			}
-		};
-
-		const handleLayoutChange = () => {
-			// Only trigger if layout is ready
-			if (!this.initialLayoutReadyProcessed) return;
-
-			const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
-			const currentFile = activeView?.file?.path ?? null;
-
-			// Only refresh if the active file has actually changed
-			if (currentFile !== this.lastProcessedFile) {
-				this.handleActiveViewChange();
-			} else {
-				// console.log(`[VirtualFooter] layout-change Skipped: file not changed (${currentFile})`);
 			}
 		};
 
@@ -400,15 +383,7 @@ export default class VirtualFooterPlugin extends Plugin {
 			// This is the "focus change" or "switching files" part, conditional on the setting.
 			// Used for active-leaf-change.
 			if (this.settings.refreshOnFileOpen && this.initialLayoutReadyProcessed) {
-				const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				const currentFile = activeView?.file?.path ?? null;
-
-				// Only refresh if the active file has actually changed
-				if (currentFile !== this.lastProcessedFile) {
-					this.handleActiveViewChange();
-				} else {
-					// console.log(`[VirtualFooter] active-leaf-change Skipped: file not changed (${currentFile})`);
-				}
+				this.handleActiveViewChange();
 			}
 		};
 
@@ -417,7 +392,7 @@ export default class VirtualFooterPlugin extends Plugin {
 			this.app.workspace.on('file-open', handleViewUpdate)
 		);
 		this.registerEvent(
-			this.app.workspace.on('layout-change', handleLayoutChange)
+			this.app.workspace.on('layout-change', handleViewUpdate)
 		);
 		this.registerEvent(
 			this.app.workspace.on('active-leaf-change', handleFocusChange)
@@ -911,9 +886,6 @@ export default class VirtualFooterPlugin extends Plugin {
 	 * @param view The MarkdownView to process.
 	 */
 	private async _processView(view: MarkdownView | null): Promise<void> {
-		if (view?.file) {
-			this.lastProcessedFile = view.file.path;
-		}
 		if (!view || !view.file) {
 			// If 'refresh on focus' is off, we clear the sidebar when focus is lost from a markdown file.
 			// If it's on, we only clear the sidebar if the last markdown file has been closed,
