@@ -1870,6 +1870,7 @@ export default class VirtualFooterPlugin extends Plugin {
 			name: loadedRule.name || DEFAULT_SETTINGS.rules[0].name,
 			enabled: loadedRule.enabled !== undefined ? loadedRule.enabled : DEFAULT_SETTINGS.rules[0].enabled,
 			type: type,
+			negated: typeof loadedRule.negated === 'boolean' ? loadedRule.negated : false,
 			contentSource: contentSource,
 			footerText: loadedRule.footerText || '', // Retain name for compatibility
 			renderLocation: loadedRule.renderLocation || globalRenderLocation || DEFAULT_SETTINGS.rules[0].renderLocation,
@@ -1918,6 +1919,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		rule.name = rule.name === undefined ? DEFAULT_SETTINGS.rules[0].name : rule.name;
 		rule.enabled = typeof rule.enabled === 'boolean' ? rule.enabled : DEFAULT_SETTINGS.rules[0].enabled!;
 		rule.type = rule.type || DEFAULT_SETTINGS.rules[0].type;
+		rule.negated = typeof originalRule.negated === 'boolean' ? originalRule.negated : false;
 
 		// Clean up all type-specific fields before re-populating
 		delete rule.path;
