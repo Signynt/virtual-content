@@ -147,6 +147,7 @@ const DEFAULT_SETTINGS: VirtualFooterSettings = {
 		name: 'Default Rule',
 		enabled: true,
 		type: RuleType.Folder,
+		negated: false,
 		path: '', // Matches all files by default
 		recursive: true,
 		contentSource: ContentSource.Text,
@@ -187,6 +188,17 @@ const SELECTOR_METADATA_CONTAINER = '.metadata-container'; // Target for positio
 
 const VIRTUAL_CONTENT_VIEW_TYPE = 'virtual-content-view';
 const VIRTUAL_CONTENT_SEPARATE_VIEW_TYPE_PREFIX = 'virtual-content-separate-view-';
+
+function normalizeBoolean(value: unknown, fallback: boolean): boolean {
+	if (typeof value === 'boolean') return value;
+	if (typeof value === 'number') return value !== 0;
+	if (typeof value === 'string') {
+		const normalized = value.trim().toLowerCase();
+		if (['true', '1', 'yes', 'on', 'not'].includes(normalized)) return true;
+		if (['false', '0', 'no', 'off', 'is', ''].includes(normalized)) return false;
+	}
+	return fallback;
+}
 
 // --- Utility Classes ---
 
@@ -1845,6 +1857,11 @@ export default class VirtualFooterPlugin extends Plugin {
 	 * @returns A migrated and normalized Rule object.
 	 */
 	private _migrateRule(loadedRule: any, globalRenderLocation?: RenderLocation): Rule {
+		const hasNegated = Object.prototype.hasOwnProperty.call(loadedRule, 'negated');
+		const migratedNegated = hasNegated
+			? normalizeBoolean(loadedRule.negated, false)
+			: (DEFAULT_SETTINGS.rules[0].negated ?? false);
+
 		// Determine rule type, defaulting if ambiguous
 		let type: RuleType;
 		if (Object.values(RuleType).includes(loadedRule.type as RuleType)) {
@@ -1870,7 +1887,7 @@ export default class VirtualFooterPlugin extends Plugin {
 			name: loadedRule.name || DEFAULT_SETTINGS.rules[0].name,
 			enabled: loadedRule.enabled !== undefined ? loadedRule.enabled : DEFAULT_SETTINGS.rules[0].enabled,
 			type: type,
-			negated: typeof loadedRule.negated === 'boolean' ? loadedRule.negated : false,
+			negated: migratedNegated,
 			contentSource: contentSource,
 			footerText: loadedRule.footerText || '', // Retain name for compatibility
 			renderLocation: loadedRule.renderLocation || globalRenderLocation || DEFAULT_SETTINGS.rules[0].renderLocation,
@@ -1896,7 +1913,18 @@ export default class VirtualFooterPlugin extends Plugin {
 			migratedRule.propertyName = loadedRule.propertyName || '';
 			migratedRule.propertyValue = loadedRule.propertyValue || '';
 		} else if (migratedRule.type === RuleType.Multi) {
-			migratedRule.conditions = loadedRule.conditions || [];
+			migratedRule.conditions = Array.isArray(loadedRule.conditions)
+				? loadedRule.conditions.map((condition: any) => ({
+					type: condition?.type,
+					negated: normalizeBoolean(condition?.negated, false),
+					path: condition?.path,
+					recursive: condition?.recursive,
+					tag: condition?.tag,
+					includeSubtags: condition?.includeSubtags,
+					propertyName: condition?.propertyName,
+					propertyValue: condition?.propertyValue,
+				}))
+				: [];
 		}
 
 		// Populate content source-specific fields
@@ -1919,7 +1947,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		rule.name = rule.name === undefined ? DEFAULT_SETTINGS.rules[0].name : rule.name;
 		rule.enabled = typeof rule.enabled === 'boolean' ? rule.enabled : DEFAULT_SETTINGS.rules[0].enabled!;
 		rule.type = rule.type || DEFAULT_SETTINGS.rules[0].type;
-		rule.negated = typeof originalRule.negated === 'boolean' ? originalRule.negated : false;
+		rule.negated = normalizeBoolean(originalRule.negated, DEFAULT_SETTINGS.rules[0].negated ?? false);
 
 		// Clean up all type-specific fields before re-populating
 		delete rule.path;
@@ -1944,7 +1972,12 @@ export default class VirtualFooterPlugin extends Plugin {
 			rule.propertyName = originalRule.propertyName === undefined ? '' : originalRule.propertyName;
 			rule.propertyValue = originalRule.propertyValue === undefined ? '' : originalRule.propertyValue;
 		} else if (rule.type === RuleType.Multi) {
-			rule.conditions = Array.isArray(originalRule.conditions) ? originalRule.conditions : [];
+			rule.conditions = Array.isArray(originalRule.conditions)
+				? originalRule.conditions.map((condition) => ({
+					...condition,
+					negated: normalizeBoolean(condition.negated, false),
+				}))
+				: [];
 			rule.multiConditionLogic = originalRule.multiConditionLogic === 'all' ? 'all' : 'any';
 		} else if (rule.type === RuleType.Dataview) {
 			rule.dataviewQuery = originalRule.dataviewQuery === undefined ? '' : originalRule.dataviewQuery;
