@@ -1752,6 +1752,9 @@ export default class VirtualFooterPlugin extends Plugin {
 	 * @param component The Obsidian Component associated with this content, for event registration.
 	 */
 	public attachInternalLinkHandlers(container: HTMLElement, sourcePath: string, component: Component): void {
+		// If in reading view, do nothing, as the default behavior is fine
+		if (container.closest(".markdown-reading-view")) return;
+
 		// Handle left-click on internal links and external file links
 		component.registerDomEvent(container, 'click', (event: MouseEvent) => {
 			if (event.button !== 0) return; // Only handle left-clicks
@@ -1787,6 +1790,14 @@ export default class VirtualFooterPlugin extends Plugin {
 				if (href) {
 					this.app.workspace.openLinkText(href, sourcePath, true); // Always open in new pane for middle-click
 				}
+				return;
+			}
+
+			// Handle external file links which don't work natively in Live Preview injected content
+			const externalLink = target.closest('a.external-link') as HTMLAnchorElement;
+			if (externalLink && externalLink.href.startsWith('file:')) {
+				event.preventDefault();
+				window.open(externalLink.href);
 			}
 		});
 	}
