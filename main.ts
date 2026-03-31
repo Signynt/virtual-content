@@ -1778,6 +1778,14 @@ export default class VirtualFooterPlugin extends Plugin {
 				if (href) {
 					this.app.workspace.openLinkText(href, sourcePath, true); // Always open in new pane for middle-click
 				}
+				return;
+			}
+
+			// Handle external file links which don't work natively in Live Preview injected content
+			const externalLink = target.closest('a.external-link') as HTMLAnchorElement;
+			if (externalLink && externalLink.href.startsWith('file:')) {
+				event.preventDefault();
+				window.open(externalLink.href);
 			}
 		});
 	}
