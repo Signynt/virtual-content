@@ -1740,6 +1740,9 @@ export default class VirtualFooterPlugin extends Plugin {
 	 * @param component The Obsidian Component associated with this content, for event registration.
 	 */
 	public attachInternalLinkHandlers(container: HTMLElement, sourcePath: string, component: Component): void {
+		// If in reading view, do nothing, as the default behavior is fine
+		if (container.closest(".markdown-reading-view")) return;
+
 		// Handle left-click on internal links and external file links
 		component.registerDomEvent(container, 'click', (event: MouseEvent) => {
 			if (event.button !== 0) return; // Only handle left-clicks
