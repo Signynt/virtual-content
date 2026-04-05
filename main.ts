@@ -2090,10 +2090,18 @@ export default class VirtualFooterPlugin extends Plugin {
 			if (rule.renderLocation === RenderLocation.Sidebar && rule.showInSeparateTab) {
 				const viewId = this.getSeparateViewId(index);
 				const tabName = rule.sidebarTabName?.trim() ? `Virtual Content: ${rule.sidebarTabName}` : `Virtual Content: Rule ${index + 1}`;
-				this.registerView(
-					viewId,
-					(leaf) => new VirtualContentView(leaf, this, viewId, tabName, () => this.getSeparateTabContent(viewId))
-				);
+
+				try {
+					this.registerView(
+						viewId,
+						(leaf) => new VirtualContentView(leaf, this, viewId, tabName, () => this.getSeparateTabContent(viewId))
+					);
+				} catch (error) {
+					// Calling `this.registerView` when the view already exists, the following error occurs.
+					// This error doesn't need special handling, but if it is left unhandled, the Settings UI will not update properly.
+
+					// console.error(error) // `Error: Attempting to register an existing view type "virtual-content-separate-view-1"`
+				}
 			}
 		});
 	}
