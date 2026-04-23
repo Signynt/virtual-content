@@ -36,7 +36,10 @@ enum RenderLocation {
 	Footer = 'footer',
 	Header = 'header',
 	Sidebar = 'sidebar',
+	SectionHeader = 'section-header',
 }
+
+type SectionHeaderPlacement = 'top' | 'bottom';
 
 // --- Interfaces ---
 
@@ -110,6 +113,12 @@ interface Rule {
 	renderAboveProperties?: boolean;
 	/** For 'footer' location: whether to render above the backlinks section. */
 	renderAboveBacklinks?: boolean;
+	/** For 'section-header' location: the heading text to target. */
+	sectionHeaderText?: string;
+	/** For 'section-header' location: the heading level to target, e.g. h2. */
+	sectionHeaderLevel?: string;
+	/** For 'section-header' location: whether to render at the top or bottom of the section. */
+	sectionHeaderPlacement?: SectionHeaderPlacement;
 	/** Whether to show this rule's content in popover views. */
 	showInPopover?: boolean;
 }
@@ -158,6 +167,9 @@ const DEFAULT_SETTINGS: VirtualFooterSettings = {
 		multiConditionLogic: 'any',
 		renderAboveProperties: false,
 		renderAboveBacklinks: false,
+		sectionHeaderText: '',
+		sectionHeaderLevel: 'h2',
+		sectionHeaderPlacement: 'top',
 		showInPopover: true,
 	}],
 	refreshOnFileOpen: false, // Default to false
@@ -172,6 +184,7 @@ const CSS_HEADER_GROUP_ELEMENT = 'virtual-footer-header-group';
 const CSS_FOOTER_GROUP_ELEMENT = 'virtual-footer-footer-group';
 const CSS_HEADER_RENDERED_CONTENT = 'virtual-footer-header-rendered-content';
 const CSS_FOOTER_RENDERED_CONTENT = 'virtual-footer-footer-rendered-content';
+const CSS_SECTION_HEADER_GROUP_ELEMENT = 'virtual-footer-section-header-group';
 const CSS_VIRTUAL_FOOTER_CM_PADDING = 'virtual-footer-cm-padding'; // For CodeMirror live preview footer spacing
 const CSS_VIRTUAL_FOOTER_REMOVE_FLEX = 'virtual-footer-remove-flex'; // For CodeMirror live preview footer layout
 const CSS_ABOVE_BACKLINKS = 'virtual-footer-above-backlinks'; // For removing min-height when above backlinks
@@ -347,6 +360,7 @@ export default class VirtualFooterPlugin extends Plugin {
 	private lastSeparateTabContents: Map<string, { content: string, sourcePath: string }> = new Map();
 	private lastHoveredLink: HTMLElement | null = null;
 	private popoverObserver: MutationObserver | null = null;
+	private sectionHeaderScrollRefreshTimeout: number | null = null;
 
 	/**
 	 * Called when the plugin is loaded.
@@ -435,6 +449,42 @@ export default class VirtualFooterPlugin extends Plugin {
 				setTimeout(() => {this.processPopoverViews();}, 100);
 			}
 		});
+
+		const handleSectionCollapseClick = (event: MouseEvent) => {
+			const target = event.target as HTMLElement;
+			const collapseIndicator = target.closest('.heading-collapse-indicator, .cm-fold-indicator, .collapse-indicator');
+			const sectionHeaderTarget = collapseIndicator ? this.getConfiguredSectionHeaderCollapseTarget(collapseIndicator) : null;
+			if (
+				collapseIndicator?.closest('.markdown-preview-view') &&
+				sectionHeaderTarget
+			) {
+				setTimeout(() => {
+					const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+					if (activeView) {
+						this.refreshSectionHeaderContent(activeView, true, sectionHeaderTarget);
+					}
+				}, 150);
+			}
+		};
+		document.addEventListener('click', handleSectionCollapseClick, true);
+		this.register(() => document.removeEventListener('click', handleSectionCollapseClick, true));
+
+		this.registerDomEvent(document, 'scroll', (event: Event) => {
+			const target = event.target as HTMLElement;
+			if (!target.closest?.('.markdown-preview-view')) {
+				return;
+			}
+			if (this.sectionHeaderScrollRefreshTimeout !== null) {
+				window.clearTimeout(this.sectionHeaderScrollRefreshTimeout);
+			}
+			this.sectionHeaderScrollRefreshTimeout = window.setTimeout(() => {
+				this.sectionHeaderScrollRefreshTimeout = null;
+				const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+				if (activeView) {
+					this.refreshSectionHeaderContent(activeView, false);
+				}
+			}, 250);
+		}, true);
 
 		// Listen for clicks to detect when popovers might switch to editing mode
 		this.registerDomEvent(document, 'click', (event: MouseEvent) => {
@@ -678,9 +728,10 @@ export default class VirtualFooterPlugin extends Plugin {
 			// Group content by render location
 			const headerContentGroups: { normal: string[], aboveProperties: string[] } = { normal: [], aboveProperties: [] };
 			const footerContentGroups: { normal: string[], aboveBacklinks: string[] } = { normal: [], aboveBacklinks: [] };
+			const sectionHeaderRules: Array<{ rule: Rule; contentText: string; index: number }> = [];
 			const contentSeparator = "\n\n";
 			
-			for (const { rule, contentText } of filteredRules) {
+			for (const { rule, contentText, index } of filteredRules) {
 				if (!contentText || contentText.trim() === "") continue;
 				
 				if (rule.renderLocation === RenderLocation.Header) {
@@ -693,6 +744,8 @@ export default class VirtualFooterPlugin extends Plugin {
 					// For popovers, treat all footer content the same regardless of renderAboveBacklinks setting
 					// since backlinks don't exist in popovers
 					footerContentGroups.normal.push(contentText);
+				} else if (rule.renderLocation === RenderLocation.SectionHeader) {
+					sectionHeaderRules.push({ rule, contentText, index });
 				}
 				// Skip sidebar rules for popovers
 			}
@@ -712,6 +765,10 @@ export default class VirtualFooterPlugin extends Plugin {
 			if (footerContentGroups.normal.length > 0) {
 				const combinedContent = footerContentGroups.normal.join(contentSeparator);
 				await this.injectContentIntoPopoverSection(markdownEmbed as HTMLElement, combinedContent, 'footer', false, filePath);
+			}
+
+			for (const { rule, contentText, index } of sectionHeaderRules) {
+				await this.injectContentIntoPopoverSectionHeader(markdownEmbed as HTMLElement, contentText, rule, index, filePath);
 			}
 			
 		} catch (error) {
@@ -893,6 +950,81 @@ export default class VirtualFooterPlugin extends Plugin {
 		}
 	}
 
+	private async injectContentIntoPopoverSectionHeader(
+		container: HTMLElement,
+		content: string,
+		rule: Rule,
+		ruleIndex: number,
+		filePath: string
+	): Promise<void> {
+		if (!content || content.trim() === "" || !rule.sectionHeaderText?.trim()) {
+			return;
+		}
+
+		const component = new Component();
+		component.load();
+
+		const groupDiv = document.createElement('div') as HTMLElementWithComponent;
+		groupDiv.className = `${CSS_DYNAMIC_CONTENT_ELEMENT} ${CSS_SECTION_HEADER_GROUP_ELEMENT}`;
+		this.setSectionHeaderDataset(groupDiv, rule, ruleIndex);
+		groupDiv.dataset.sourcePath = filePath;
+		groupDiv.component = component;
+
+		try {
+			await MarkdownRenderer.render(this.app, content, groupDiv, filePath, component);
+			this.attachInternalLinkHandlers(groupDiv, filePath, component);
+
+			const popoverContainer = container.closest('.popover.hover-popover');
+			const isEditingMode = popoverContainer?.classList.contains('is-editing') ||
+				container.querySelector(SELECTOR_EDITOR_SIZER) !== null;
+			const level = this.getSectionHeaderLevelNumber(rule);
+			const placement = rule.sectionHeaderPlacement || 'top';
+			const target = isEditingMode
+				? this.findEditorSectionTarget(container, rule)
+				: this.findPreviewSectionTarget(container, rule);
+
+			if (!target) {
+				component.unload();
+				return;
+			}
+
+			this.removeSectionHeaderContent(container, ruleIndex);
+			if (this.isHeadingCollapsed(target)) {
+				component.unload();
+				return;
+			}
+
+			if (isEditingMode) {
+				if (placement === 'top') {
+					target.parentElement?.insertBefore(groupDiv, target.nextSibling);
+				} else {
+					const endNode = this.getEditorSectionEnd(target, level);
+					if (endNode) {
+						endNode.parentElement?.insertBefore(groupDiv, endNode);
+					} else {
+						target.parentElement?.appendChild(groupDiv);
+					}
+				}
+			} else {
+				const anchor = target.parentElement || target;
+				if (placement === 'top') {
+					anchor.parentElement?.insertBefore(groupDiv, anchor.nextSibling);
+				} else {
+					const endNode = this.getPreviewSectionEnd(target, level);
+					if (endNode) {
+						endNode.parentElement?.insertBefore(groupDiv, endNode);
+					} else {
+						anchor.parentElement?.appendChild(groupDiv);
+					}
+				}
+			}
+			this.updateSectionHeaderVisibility(container, isEditingMode);
+		} catch (error) {
+			console.error("VirtualContent: Error rendering section header content for popover:", error);
+			component.unload();
+		}
+	}
+
 	/**
 	 * Processes a given Markdown view to inject or update dynamic content.
 	 * @param view The MarkdownView to process.
@@ -913,7 +1045,8 @@ export default class VirtualFooterPlugin extends Plugin {
 		// Check if this is a popover view
 		const isPopoverView = this.isInPopover(view);
 
-		await this.removeDynamicContentFromView(view); // Clear existing content first
+		await this.removeDynamicContentFromView(view, true); // Clear existing content first, preserving section content until its target is found
+		this.removeStaleSectionHeaderContent(view);
 		const applicableRulesWithContent = await this._getApplicableRulesAndContent(view.file.path);
 
 		// Filter rules based on popover visibility setting
@@ -935,6 +1068,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		// Combine content from all applicable rules, grouping by render location and positioning
 		const headerContentGroups: { normal: string[], aboveProperties: string[] } = { normal: [], aboveProperties: [] };
 		const footerContentGroups: { normal: string[], aboveBacklinks: string[] } = { normal: [], aboveBacklinks: [] };
+		const sectionHeaderRules: Array<{ rule: Rule; contentText: string; index: number }> = [];
 		
 		for (const { rule, contentText, index } of filteredRules) {
 			if (!contentText || contentText.trim() === "") continue; // Skip empty content
@@ -963,6 +1097,8 @@ export default class VirtualFooterPlugin extends Plugin {
 				} else {
 					combinedSidebarText += (combinedSidebarText ? contentSeparator : "") + contentText;
 				}
+			} else if (rule.renderLocation === RenderLocation.SectionHeader) {
+				sectionHeaderRules.push({ rule, contentText, index });
 			}
 		}
 
@@ -1026,6 +1162,11 @@ export default class VirtualFooterPlugin extends Plugin {
 					pendingFooterAboveBacklinksDiv = result;
 				}
 			}
+
+			for (const { rule, contentText, index } of sectionHeaderRules) {
+				await this.renderAndInjectSectionHeaderContent(view, contentText, rule, index, true);
+			}
+
 		}
 
 		// If any content is pending for preview mode, set up an observer
@@ -1038,6 +1179,298 @@ export default class VirtualFooterPlugin extends Plugin {
 				filePath: view.file.path,
 			});
 			this.ensurePreviewObserver(view);
+		}
+	}
+
+	private normalizeSectionHeaderText(text: string): string {
+		return text.replace(/\s+/g, ' ').trim().toLowerCase();
+	}
+
+	private getSectionHeaderLevelNumber(rule: Rule): number {
+		const match = (rule.sectionHeaderLevel || 'h2').match(/^h([1-6])$/);
+		return match ? Number(match[1]) : 2;
+	}
+
+	private findPreviewSectionTarget(container: HTMLElement, rule: Rule): HTMLElement | null {
+		const targetText = this.normalizeSectionHeaderText(rule.sectionHeaderText || '');
+		if (!targetText) return null;
+
+		const selector = rule.sectionHeaderLevel || 'h2';
+		const headings = Array.from(container.querySelectorAll<HTMLElement>(selector));
+		return headings.find((heading) => this.normalizeSectionHeaderText(heading.textContent || '') === targetText) || null;
+	}
+
+	private findEditorSectionTarget(container: HTMLElement, rule: Rule): HTMLElement | null {
+		const targetText = this.normalizeSectionHeaderText(rule.sectionHeaderText || '');
+		if (!targetText) return null;
+
+		const level = this.getSectionHeaderLevelNumber(rule);
+		const headings = Array.from(container.querySelectorAll<HTMLElement>(`.cm-line.HyperMD-header-${level}`));
+		return headings.find((heading) => {
+			const text = (heading.textContent || '').replace(/^#+\s*/, '');
+			return this.normalizeSectionHeaderText(text) === targetText;
+		}) || null;
+	}
+
+	private getPreviewSectionEnd(heading: HTMLElement, level: number): Node | null {
+		let node: Node | null = heading.parentElement?.nextSibling || heading.nextSibling;
+		while (node) {
+			if (node instanceof HTMLElement) {
+				const nextHeading = node.matches('h1,h2,h3,h4,h5,h6')
+					? node
+					: node.querySelector<HTMLElement>('h1,h2,h3,h4,h5,h6');
+				if (nextHeading) {
+					const nextLevel = Number(nextHeading.tagName.substring(1));
+					if (nextLevel <= level) {
+						return node;
+					}
+				}
+			}
+			node = node.nextSibling;
+		}
+		return null;
+	}
+
+	private getEditorSectionEnd(headingLine: HTMLElement, level: number): Node | null {
+		let node: Node | null = headingLine.nextSibling;
+		while (node) {
+			if (node instanceof HTMLElement) {
+				for (let currentLevel = 1; currentLevel <= level; currentLevel++) {
+					if (node.classList.contains(`HyperMD-header-${currentLevel}`)) {
+						return node;
+					}
+				}
+			}
+			node = node.nextSibling;
+		}
+		return null;
+	}
+
+	private removeSectionHeaderContent(container: HTMLElement, ruleIndex: number): void {
+		container.querySelectorAll(`.${CSS_SECTION_HEADER_GROUP_ELEMENT}[data-rule-index="${ruleIndex}"]`).forEach(el => {
+			const holder = el as HTMLElementWithComponent;
+			holder.component?.unload();
+			el.remove();
+		});
+	}
+
+	private isHeadingCollapsed(heading: HTMLElement): boolean {
+		let element: HTMLElement | null = heading;
+		let depth = 0;
+		while (element && depth < 4) {
+			const className = element.className.toString().toLowerCase();
+			if (
+				element.getAttribute('aria-expanded') === 'false' ||
+				className.includes('is-collapsed') ||
+				className.includes('is-folded') ||
+				className.includes('folded')
+			) {
+				return true;
+			}
+			element = element.parentElement;
+			depth++;
+		}
+		return false;
+	}
+
+	private setSectionHeaderDataset(groupDiv: HTMLElement, rule: Rule, ruleIndex: number): void {
+		groupDiv.dataset.ruleIndex = String(ruleIndex);
+		groupDiv.dataset.sectionHeaderText = rule.sectionHeaderText || '';
+		groupDiv.dataset.sectionHeaderLevel = rule.sectionHeaderLevel || 'h2';
+		groupDiv.dataset.sectionHeaderPlacement = rule.sectionHeaderPlacement || 'top';
+	}
+
+	private removeStaleSectionHeaderContent(view: MarkdownView): void {
+		const sourcePath = view.file?.path || '';
+		view.containerEl.querySelectorAll<HTMLElement>(`.${CSS_SECTION_HEADER_GROUP_ELEMENT}`).forEach(el => {
+			if (el.dataset.sourcePath !== sourcePath) {
+				const holder = el as HTMLElementWithComponent;
+				holder.component?.unload();
+				el.remove();
+			}
+		});
+	}
+
+	private updateSectionHeaderVisibility(container: HTMLElement, isEditingMode: boolean): void {
+		container.querySelectorAll<HTMLElement>(`.${CSS_SECTION_HEADER_GROUP_ELEMENT}`).forEach(groupDiv => {
+			const rule: Rule = {
+				type: RuleType.Folder,
+				contentSource: ContentSource.Text,
+				footerText: '',
+				renderLocation: RenderLocation.SectionHeader,
+				sectionHeaderText: groupDiv.dataset.sectionHeaderText || '',
+				sectionHeaderLevel: groupDiv.dataset.sectionHeaderLevel || 'h2',
+				sectionHeaderPlacement: groupDiv.dataset.sectionHeaderPlacement === 'bottom' ? 'bottom' : 'top',
+			};
+			const heading = isEditingMode
+				? this.findEditorSectionTarget(container, rule)
+				: this.findPreviewSectionTarget(container, rule);
+			groupDiv.toggleAttribute('hidden', heading ? this.isHeadingCollapsed(heading) : false);
+		});
+	}
+
+	private isConfiguredSectionHeaderElement(heading: HTMLElement): boolean {
+		const headingText = this.normalizeSectionHeaderText(heading.textContent || '');
+		if (!headingText) {
+			return false;
+		}
+
+		const headingLevel = heading.tagName.match(/^H([1-6])$/)
+			? heading.tagName.toLowerCase()
+			: Array.from(heading.classList)
+				.map(className => className.match(/^HyperMD-header-([1-6])$/)?.[1])
+				.find(Boolean);
+		const normalizedHeadingLevel = headingLevel && headingLevel.length === 1 ? `h${headingLevel}` : headingLevel;
+
+		return this.settings.rules.some(rule =>
+			rule.enabled &&
+			rule.renderLocation === RenderLocation.SectionHeader &&
+			this.normalizeSectionHeaderText(rule.sectionHeaderText || '') === headingText &&
+			(rule.sectionHeaderLevel || 'h2') === normalizedHeadingLevel
+		);
+	}
+
+	private getConfiguredSectionHeaderCollapseTarget(collapseIndicator: Element): { text: string; level: string } | null {
+		const previewHeading = collapseIndicator.closest('[class^="el-h"], [class*=" el-h"]')?.querySelector<HTMLElement>('h1,h2,h3,h4,h5,h6');
+		if (previewHeading && this.isConfiguredSectionHeaderElement(previewHeading)) {
+			return {
+				text: this.normalizeSectionHeaderText(previewHeading.textContent || ''),
+				level: previewHeading.tagName.toLowerCase(),
+			};
+		}
+
+		const editorHeading = collapseIndicator.closest<HTMLElement>('.cm-line[class*="HyperMD-header-"]');
+		if (!editorHeading || !this.isConfiguredSectionHeaderElement(editorHeading)) {
+			return null;
+		}
+
+		const level = Array.from(editorHeading.classList)
+			.map(className => className.match(/^HyperMD-header-([1-6])$/)?.[1])
+			.find(Boolean);
+		return level ? {
+			text: this.normalizeSectionHeaderText(editorHeading.textContent || ''),
+			level: `h${level}`,
+		} : null;
+	}
+
+	private async refreshSectionHeaderContent(
+		view: MarkdownView,
+		forceReplace: boolean,
+		target?: { text: string; level: string }
+	): Promise<void> {
+		if (!view.file) {
+			return;
+		}
+
+		this.removeStaleSectionHeaderContent(view);
+		const applicableRulesWithContent = await this._getApplicableRulesAndContent(view.file.path);
+		for (const { rule, contentText, index } of applicableRulesWithContent) {
+			if (rule.renderLocation !== RenderLocation.SectionHeader) {
+				continue;
+			}
+			if (
+				target &&
+				(
+					this.normalizeSectionHeaderText(rule.sectionHeaderText || '') !== target.text ||
+					(rule.sectionHeaderLevel || 'h2') !== target.level
+				)
+			) {
+				continue;
+			}
+			await this.renderAndInjectSectionHeaderContent(view, contentText, rule, index, forceReplace);
+		}
+	}
+
+	private async renderAndInjectSectionHeaderContent(
+		view: MarkdownView,
+		contentText: string,
+		rule: Rule,
+		ruleIndex: number,
+		forceReplace: boolean = false
+	): Promise<void> {
+		if (!contentText || contentText.trim() === "" || !rule.sectionHeaderText?.trim()) {
+			return;
+		}
+
+		const sourcePath = view.file?.path || '';
+		const viewState = view.getState();
+		const existingSelector = `.${CSS_SECTION_HEADER_GROUP_ELEMENT}[data-rule-index="${ruleIndex}"][data-source-path="${sourcePath}"]`;
+		let container: HTMLElement | null = null;
+		let heading: HTMLElement | null = null;
+
+		if (viewState.mode !== 'preview') {
+			return;
+		}
+
+		container = view.previewMode.containerEl;
+		heading = this.findPreviewSectionTarget(container, rule);
+
+		if (!container || !heading) {
+			return;
+		}
+
+		if (this.isHeadingCollapsed(heading)) {
+			this.removeSectionHeaderContent(container, ruleIndex);
+			return;
+		}
+
+		if (!forceReplace && view.containerEl.querySelector(existingSelector)) {
+			return;
+		}
+
+		const component = new Component();
+		component.load();
+
+		const groupDiv = document.createElement('div') as HTMLElementWithComponent;
+		groupDiv.className = `${CSS_DYNAMIC_CONTENT_ELEMENT} ${CSS_SECTION_HEADER_GROUP_ELEMENT}`;
+		this.setSectionHeaderDataset(groupDiv, rule, ruleIndex);
+		groupDiv.dataset.sourcePath = sourcePath;
+		groupDiv.component = component;
+
+		try {
+			await MarkdownRenderer.render(this.app, contentText, groupDiv, sourcePath, component);
+		} catch (error) {
+			console.log("VirtualFooter: Error rendering section header content:", error);
+			component.unload();
+			return;
+		}
+
+		const placement = rule.sectionHeaderPlacement || 'top';
+		const level = this.getSectionHeaderLevelNumber(rule);
+		let injected = false;
+
+		if (viewState.mode === 'preview') {
+			if (heading) {
+				this.removeSectionHeaderContent(container, ruleIndex);
+				const anchor = heading.parentElement || heading;
+				if (placement === 'top') {
+					if (anchor !== heading) {
+						anchor.appendChild(groupDiv);
+					} else {
+						anchor.parentElement?.insertBefore(groupDiv, anchor.nextSibling);
+					}
+				} else {
+					const endNode = this.getPreviewSectionEnd(heading, level);
+					if (endNode) {
+						const previousElement = endNode.previousSibling instanceof HTMLElement ? endNode.previousSibling : null;
+						if (previousElement && previousElement !== anchor) {
+							previousElement.appendChild(groupDiv);
+						} else {
+							endNode.parentElement?.insertBefore(groupDiv, endNode);
+						}
+					} else {
+						anchor.parentElement?.appendChild(groupDiv);
+					}
+				}
+				injected = true;
+				this.updateSectionHeaderVisibility(container, false);
+			}
+		}
+
+		if (injected) {
+			this.attachInternalLinkHandlers(groupDiv, sourcePath, component);
+		} else {
+			component.unload();
 		}
 	}
 
@@ -1444,8 +1877,11 @@ export default class VirtualFooterPlugin extends Plugin {
 	 * Removes all plugin-injected DOM elements from a given container.
 	 * @param containerEl The HTMLElement to search within.
 	 */
-	private async removeInjectedContentDOM(containerEl: HTMLElement): Promise<void> {
+	private async removeInjectedContentDOM(containerEl: HTMLElement, preserveSectionHeader: boolean = false): Promise<void> {
 		containerEl.querySelectorAll(`.${CSS_DYNAMIC_CONTENT_ELEMENT}`).forEach(el => {
+			if (preserveSectionHeader && el.classList.contains(CSS_SECTION_HEADER_GROUP_ELEMENT)) {
+				return;
+			}
 			const componentHolder = el as HTMLElementWithComponent;
 			if (componentHolder.component) {
 				componentHolder.component.unload(); // Unload associated Obsidian component
@@ -1458,9 +1894,9 @@ export default class VirtualFooterPlugin extends Plugin {
 	 * Removes all dynamic content, styles, and observers associated with a specific view.
 	 * @param view The MarkdownView to clean up.
 	 */
-	private async removeDynamicContentFromView(view: MarkdownView): Promise<void> {
+	private async removeDynamicContentFromView(view: MarkdownView, preserveSectionHeader: boolean = false): Promise<void> {
 		this.removeLivePreviewFooterStyles(view);
-		await this.removeInjectedContentDOM(view.containerEl);
+		await this.removeInjectedContentDOM(view.containerEl, preserveSectionHeader);
 
 		// Disconnect and remove observer for this view
 		const observer = this.previewObservers.get(view);
@@ -1897,6 +2333,9 @@ export default class VirtualFooterPlugin extends Plugin {
 			multiConditionLogic: loadedRule.multiConditionLogic || 'any',
 			renderAboveProperties: loadedRule.renderAboveProperties !== undefined ? loadedRule.renderAboveProperties : undefined,
 			renderAboveBacklinks: loadedRule.renderAboveBacklinks !== undefined ? loadedRule.renderAboveBacklinks : undefined,
+			sectionHeaderText: loadedRule.sectionHeaderText || '',
+			sectionHeaderLevel: loadedRule.sectionHeaderLevel || 'h2',
+			sectionHeaderPlacement: loadedRule.sectionHeaderPlacement === 'bottom' ? 'bottom' : 'top',
 			dataviewQuery: loadedRule.dataviewQuery || '',
 			footerFilePath: loadedRule.footerFilePath || '', // Retained name for compatibility
 			showInPopover: loadedRule.showInPopover !== undefined ? loadedRule.showInPopover : true,
@@ -2007,12 +2446,27 @@ export default class VirtualFooterPlugin extends Plugin {
 		if (rule.renderLocation === RenderLocation.Header) {
 			rule.renderAboveProperties = typeof originalRule.renderAboveProperties === 'boolean' ? originalRule.renderAboveProperties : false;
 			delete rule.renderAboveBacklinks;
+			delete rule.sectionHeaderText;
+			delete rule.sectionHeaderLevel;
+			delete rule.sectionHeaderPlacement;
 		} else if (rule.renderLocation === RenderLocation.Footer) {
 			rule.renderAboveBacklinks = typeof originalRule.renderAboveBacklinks === 'boolean' ? originalRule.renderAboveBacklinks : false;
 			delete rule.renderAboveProperties;
+			delete rule.sectionHeaderText;
+			delete rule.sectionHeaderLevel;
+			delete rule.sectionHeaderPlacement;
+		} else if (rule.renderLocation === RenderLocation.SectionHeader) {
+			rule.sectionHeaderText = originalRule.sectionHeaderText || '';
+			rule.sectionHeaderLevel = /^h[1-6]$/.test(originalRule.sectionHeaderLevel || '') ? originalRule.sectionHeaderLevel : 'h2';
+			rule.sectionHeaderPlacement = originalRule.sectionHeaderPlacement === 'bottom' ? 'bottom' : 'top';
+			delete rule.renderAboveProperties;
+			delete rule.renderAboveBacklinks;
 		} else {
 			delete rule.renderAboveProperties;
 			delete rule.renderAboveBacklinks;
+			delete rule.sectionHeaderText;
+			delete rule.sectionHeaderLevel;
+			delete rule.sectionHeaderPlacement;
 		}
 
 		// Normalize popover visibility setting
@@ -2601,10 +3055,11 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 		// --- Render Location Setting ---
 		new Setting(ruleContentContainer)
 			.setName('Render location')
-			.setDesc('Choose whether this rule renders its content in the header, footer, or a dedicated sidebar tab.')
+			.setDesc('Choose whether this rule renders its content in the note header, footer, a selected section, or a dedicated sidebar tab.')
 			.addDropdown(dropdown => dropdown
 				.addOption(RenderLocation.Footer, 'Footer')
 				.addOption(RenderLocation.Header, 'Header')
+				.addOption(RenderLocation.SectionHeader, 'Section header')
 				.addOption(RenderLocation.Sidebar, 'Sidebar')
 				.setValue(rule.renderLocation || RenderLocation.Footer) // Default to Footer
 				.onChange(async (value: string) => {
@@ -2650,6 +3105,48 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 					.setValue(rule.renderAboveProperties || false)
 					.onChange(async (value) => {
 						rule.renderAboveProperties = value;
+						await this.plugin.saveSettings();
+					}));
+		}
+
+		// --- Section Header-Specific Settings ---
+		if (rule.renderLocation === RenderLocation.SectionHeader) {
+			new Setting(ruleContentContainer)
+				.setName('Header text')
+				.setDesc('The exact heading text to target, without leading # characters.')
+				.addText(text => text
+					.setPlaceholder('e.g., Tasks')
+					.setValue(rule.sectionHeaderText || '')
+					.onChange((value) => {
+						rule.sectionHeaderText = value;
+						this.debouncedSave();
+					}));
+
+			new Setting(ruleContentContainer)
+				.setName('Header type')
+				.setDesc('Choose which heading level should be matched.')
+				.addDropdown(dropdown => dropdown
+					.addOption('h1', 'H1')
+					.addOption('h2', 'H2')
+					.addOption('h3', 'H3')
+					.addOption('h4', 'H4')
+					.addOption('h5', 'H5')
+					.addOption('h6', 'H6')
+					.setValue(rule.sectionHeaderLevel || 'h2')
+					.onChange(async (value: string) => {
+						rule.sectionHeaderLevel = value;
+						await this.plugin.saveSettings();
+					}));
+
+			new Setting(ruleContentContainer)
+				.setName('Section placement')
+				.setDesc('Choose whether virtual content appears immediately after the heading or at the end of that heading section.')
+				.addDropdown(dropdown => dropdown
+					.addOption('top', 'Top of section')
+					.addOption('bottom', 'Bottom of section')
+					.setValue(rule.sectionHeaderPlacement || 'top')
+					.onChange(async (value: SectionHeaderPlacement) => {
+						rule.sectionHeaderPlacement = value;
 						await this.plugin.saveSettings();
 					}));
 		}
