@@ -1,7 +1,7 @@
 # Virtual Content
 > Previously known as "Virtual Footer"
 
-Set rules to add markdown text to the bottom or top of files based on rules. This text get's rendered normally, including dataview blocks or Obsidian Bases. Your notes don't get modified or changed, the given markdown text is simply rendered "virtually". Rules can be applied to folders, tags or properties. The content to be included can be entered directly in the plugin settings, or come from a file in your vault.
+Set rules to add markdown text to files based on rules. This text gets rendered normally, including dataview blocks or Obsidian Bases. Your notes don't get modified or changed, the given markdown text is simply rendered "virtually". Rules can be defined based on folders, tags or properties. The content to be included can be entered directly in the plugin settings, or come from a file in your vault.
 
 This is especially useful if you have many files with the same dataview block. Instead of pasting the dataview codeblock into every note, you can simply add it with this plugin. This prevents unecessary file bloat, while also letting you easily change the code for all files at the same time.
 
@@ -13,6 +13,7 @@ This is especially useful if you have many files with the same dataview block. I
 	- Dataview rules can be used to create complex conditions
 - Lets you select wether the "virtual content" gets added as a footer (end of file), a header (below properties) or in the sidebar
 	- Lets you choose if all sidebar "virtual content" gets added to the same sidebar tab, or if it should be shown in it's own tab
+- Supports virtual content at the top or bottom of sections (defined using headings)
 - Allows for "virtual content" to be defined in the plugin settings, or in a markdown file
 - Rules can be enabled or disabled from the plugin settings
 
@@ -165,6 +166,8 @@ In the above snippet it's limited to `.daily-note` so that this style only appli
 ## Limitations
 
 Links in the markdown text work natively when in Reading mode, however they don't in Live Preview, so I've added a workaround that gets most functionality back. This means that `left click` works to open the link in the current tab, and `middle mouse` and `ctrl/cmd + left click` works to open the link in a new tab. Right click currently doesn't work.
+
+Sectional virtual content currently only supports Reading mode and does not display in Live Preview.
 
 ## Support
 You can send me a donation using [my Paypal link](https://paypal.me/VincenzoBarroso). Thanks for the support!
