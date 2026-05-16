@@ -20,6 +20,16 @@
     min-height: 100px;
 }
 
+.virtual-footer-embedded-content.virtual-footer-header-group,
+.virtual-footer-canvas-content.virtual-footer-header-group {
+    margin-bottom: var(--p-spacing);
+}
+
+.virtual-footer-embedded-content.virtual-footer-footer-group,
+.virtual-footer-canvas-content.virtual-footer-footer-group {
+    margin-top: var(--p-spacing);
+}
+
 .markdown-preview-view [class^="el-h"] > .virtual-footer-section-header-group,
 .markdown-preview-view [class*=" el-h"] > .virtual-footer-section-header-group {
     margin-top: var(--p-spacing);

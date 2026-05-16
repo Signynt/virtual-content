@@ -121,6 +121,10 @@ interface Rule {
 	sectionHeaderPlacement?: SectionHeaderPlacement;
 	/** Whether to show this rule's content in popover views. */
 	showInPopover?: boolean;
+	/** Whether to show this rule's content in embedded notes. */
+	showInEmbed?: boolean;
+	/** Whether to show this rule's content in canvas card previews. */
+	showInCanvas?: boolean;
 }
 
 /**
@@ -137,6 +141,12 @@ interface VirtualFooterSettings {
 	refreshOnMetadataChange?: boolean;
 	/** Whether to treat property values as links for matching file targets. */
 	smartPropertyLinks?: boolean;
+	/** Whether to enable virtual content inside embedded notes. */
+	enableEmbedRendering?: boolean;
+	/** Whether to enable canvas rendering support (can be expensive). */
+	enableCanvasRendering?: boolean;
+	/** Whether to log embed/canvas resolution details for debugging. */
+	debugEmbedCanvas?: boolean;
 }
 
 /**
@@ -171,11 +181,16 @@ const DEFAULT_SETTINGS: VirtualFooterSettings = {
 		sectionHeaderLevel: 'h2',
 		sectionHeaderPlacement: 'top',
 		showInPopover: true,
+		showInEmbed: true,
+		showInCanvas: true,
 	}],
 	refreshOnFileOpen: false, // Default to false
 	renderInSourceMode: false, // Default to false
 	refreshOnMetadataChange: false, // Default to false
 	smartPropertyLinks: false, // Default to false
+	enableEmbedRendering: false, // Default to false
+	enableCanvasRendering: false, // Default to false
+	debugEmbedCanvas: false, // Default to false
 };
 
 // CSS Classes for styling and identifying plugin-generated elements
@@ -360,7 +375,25 @@ export default class VirtualFooterPlugin extends Plugin {
 	private lastSeparateTabContents: Map<string, { content: string, sourcePath: string }> = new Map();
 	private lastHoveredLink: HTMLElement | null = null;
 	private popoverObserver: MutationObserver | null = null;
+	private canvasObserver: MutationObserver | null = null;
 	private sectionHeaderScrollRefreshTimeout: number | null = null;
+	private embedObservers: WeakMap<MarkdownView, MutationObserver> = new WeakMap();
+	private embedRefreshTimeouts: WeakMap<MarkdownView, number> = new WeakMap();
+	private embedLastScanByView: WeakMap<MarkdownView, { filePath: string; time: number }> = new WeakMap();
+	private canvasRefreshTimeout: number | null = null;
+	private canvasRefreshInProgress = false;
+	private canvasInteractionHandler: ((event: Event) => void) | null = null;
+
+	private logEmbedCanvasDebug(message: string, data?: Record<string, unknown>): void {
+		if (!this.settings.debugEmbedCanvas) {
+			return;
+		}
+		if (data) {
+			console.log(`VirtualContent: ${message}`, data);
+		} else {
+			console.log(`VirtualContent: ${message}`);
+		}
+	}
 
 	/**
 	 * Called when the plugin is loaded.
@@ -542,6 +575,47 @@ export default class VirtualFooterPlugin extends Plugin {
 			});
 		}
 
+		if (this.settings.enableCanvasRendering) {
+			// Observe the document for canvas node updates
+			this.canvasObserver = new MutationObserver((mutations) => {
+				for (const mutation of mutations) {
+					if (mutation.type === 'childList') {
+						const addedOrRemovedNodes = [...mutation.addedNodes, ...mutation.removedNodes];
+						const hasCanvasNodeChange = addedOrRemovedNodes.some((node) => {
+							return node instanceof HTMLElement && (node.classList.contains('canvas-node') || node.querySelector('.canvas-node'));
+						});
+						if (hasCanvasNodeChange) {
+							this.queueCanvasEmbedRefresh();
+						}
+					}
+					if (mutation.type === 'attributes' && mutation.target instanceof HTMLElement) {
+						const target = mutation.target;
+						if (target.classList.contains('canvas-node')) {
+							this.queueCanvasEmbedRefresh();
+						}
+					}
+				}
+			});
+
+			if (this.canvasObserver) {
+				this.canvasObserver.observe(document.body, {
+					childList: true,
+					subtree: true,
+					attributes: true,
+					attributeFilter: ['class', 'data-path', 'data-href', 'data-src', 'src']
+				});
+			}
+
+			this.canvasInteractionHandler = (event: Event) => {
+				const target = event.target as HTMLElement | null;
+				if (target?.closest?.('.canvas')) {
+					this.queueCanvasEmbedRefresh();
+				}
+			};
+			this.registerDomEvent(document, 'wheel', this.canvasInteractionHandler, true);
+			this.registerDomEvent(document, 'pointerup', this.canvasInteractionHandler, true);
+		}
+
 		// Initial processing for any currently active view, once layout is ready
 		this.app.workspace.onLayoutReady(() => {
 			if (!this.initialLayoutReadyProcessed) {
@@ -557,6 +631,7 @@ export default class VirtualFooterPlugin extends Plugin {
 	 */
 	async onunload() {
 		this.popoverObserver?.disconnect();
+		this.canvasObserver?.disconnect();
 		this.app.workspace.detachLeavesOfType(VIRTUAL_CONTENT_VIEW_TYPE);
 		this.settings.rules.forEach((rule, index) => {
 			if (rule.renderLocation === RenderLocation.Sidebar && rule.showInSeparateTab) {
@@ -582,6 +657,14 @@ export default class VirtualFooterPlugin extends Plugin {
 		// Observers and pending injections are cleared per-view in `removeDynamicContentFromView`.
 		this.previewObservers = new WeakMap();
 		this.pendingPreviewInjections = new WeakMap();
+		this.embedObservers = new WeakMap();
+		this.embedRefreshTimeouts = new WeakMap();
+		if (this.canvasRefreshTimeout !== null) {
+			window.clearTimeout(this.canvasRefreshTimeout);
+		}
+		this.canvasRefreshTimeout = null;
+		this.canvasRefreshInProgress = false;
+		this.canvasInteractionHandler = null;
 	}
 
 	/**
@@ -645,6 +728,326 @@ export default class VirtualFooterPlugin extends Plugin {
 				this.processPopoverDirectly(popover as HTMLElement);
 			}
 		});
+	}
+
+	private queueEmbedRefresh(view: MarkdownView): void {
+		if (!this.settings.enableEmbedRendering) {
+			return;
+		}
+		const existingTimeout = this.embedRefreshTimeouts.get(view);
+		if (existingTimeout) {
+			window.clearTimeout(existingTimeout);
+		}
+		const currentPath = view.file?.path;
+		if (currentPath) {
+			const lastScan = this.embedLastScanByView.get(view);
+			if (lastScan && lastScan.filePath === currentPath && Date.now() - lastScan.time < 750) {
+				return;
+			}
+		}
+		const timeout = window.setTimeout(() => {
+			this.embedRefreshTimeouts.delete(view);
+			void this.processEmbedsInView(view);
+		}, 250);
+		this.embedRefreshTimeouts.set(view, timeout);
+	}
+
+	private queueCanvasEmbedRefresh(): void {
+		if (!this.settings.enableCanvasRendering) {
+			return;
+		}
+		if (!this.isCanvasActive()) {
+			return;
+		}
+		if (this.canvasRefreshTimeout !== null) {
+			return;
+		}
+		this.canvasRefreshTimeout = window.setTimeout(() => {
+			this.canvasRefreshTimeout = null;
+			if (this.canvasRefreshInProgress) {
+				return;
+			}
+			this.canvasRefreshInProgress = true;
+			void this.processCanvasEmbeds().then(() => {
+				this.canvasRefreshInProgress = false;
+			}, () => {
+				this.canvasRefreshInProgress = false;
+			});
+		}, 250);
+	}
+
+	private ensureEmbedObserver(view: MarkdownView): void {
+		if (!this.settings.enableEmbedRendering) {
+			return;
+		}
+		if (this.embedObservers.has(view)) {
+			return;
+		}
+		const observer = new MutationObserver((_mutations) => {
+			this.queueEmbedRefresh(view);
+		});
+		observer.observe(view.containerEl, { childList: true, subtree: true });
+		this.embedObservers.set(view, observer);
+	}
+
+	private isEmbedInCanvas(embed: HTMLElement): boolean {
+		return !!embed.closest('.canvas, .canvas-node, .canvas-node-container, .canvas-node-content');
+	}
+
+	private extractEmbedFilePath(embed: HTMLElement): string | null {
+		const canvasNode = embed.closest('.canvas-node');
+		if (canvasNode) {
+			const canvasPath = this.extractCanvasNodePath(canvasNode as HTMLElement);
+			if (canvasPath) {
+				this.logEmbedCanvasDebug('Canvas node path resolved', {
+					canvasPath
+				});
+				return canvasPath;
+			}
+		}
+
+		const embedContainer = embed.closest('.markdown-embed') as HTMLElement | null;
+		const scopedContainer = embedContainer || embed;
+		const embedLink = scopedContainer.querySelector('.markdown-embed-link a.internal-link[data-href]') as HTMLAnchorElement | null;
+		const embedLinkHref = embedLink?.dataset?.href;
+		const rawCandidates = [
+			scopedContainer.getAttribute('data-path'),
+			scopedContainer.getAttribute('data-src'),
+			scopedContainer.getAttribute('src'),
+			scopedContainer.getAttribute('data-href'),
+			scopedContainer.dataset?.path,
+			scopedContainer.dataset?.src,
+			scopedContainer.dataset?.href,
+			embedLinkHref,
+		];
+		const resolved = this.resolveFirstPathCandidate(rawCandidates);
+		if (!resolved) {
+			this.logEmbedCanvasDebug('Embed candidates not resolved', {
+				embedClass: scopedContainer.className,
+				candidates: rawCandidates.filter(Boolean)
+			});
+		}
+		return resolved;
+	}
+
+	private extractCanvasNodePath(canvasNode: HTMLElement): string | null {
+		const rawCandidates = [
+			canvasNode.getAttribute('data-path'),
+			canvasNode.getAttribute('data-href'),
+			canvasNode.getAttribute('data-src'),
+			canvasNode.getAttribute('data-file'),
+			canvasNode.getAttribute('data-file-path'),
+			canvasNode.getAttribute('data-filepath'),
+			canvasNode.dataset?.path,
+			canvasNode.dataset?.href,
+			canvasNode.dataset?.src,
+			canvasNode.dataset?.file,
+			canvasNode.dataset?.filePath,
+			canvasNode.dataset?.filepath,
+		];
+
+		const linkCandidate = canvasNode.querySelector('.canvas-node-title a.internal-link[data-href]') as HTMLAnchorElement | null;
+		if (linkCandidate?.dataset?.href) {
+			rawCandidates.push(linkCandidate.dataset.href);
+		}
+
+		const titleEl = canvasNode.querySelector('.canvas-node-title, .canvas-node-header, .canvas-node-label') as HTMLElement | null;
+		const titleText = titleEl?.textContent?.trim();
+		if (titleText) {
+			rawCandidates.push(titleText);
+		}
+
+		const resolved = this.resolveFirstPathCandidate(rawCandidates);
+		if (!resolved) {
+			const attrDump: Record<string, string> = {};
+			Array.from(canvasNode.attributes).forEach(attr => {
+				attrDump[attr.name] = attr.value;
+			});
+			this.logEmbedCanvasDebug('Canvas node path not resolved', {
+				canvasNodeClass: canvasNode.className,
+				attributes: attrDump,
+				candidates: rawCandidates.filter(Boolean)
+			});
+		}
+		return resolved;
+	}
+
+	private extractPathFromElement(element: HTMLElement): string | null {
+		const rawCandidates = [
+			element.getAttribute('data-path'),
+			element.getAttribute('data-href'),
+			element.getAttribute('data-src'),
+			element.getAttribute('src'),
+			element.dataset?.path,
+			element.dataset?.href,
+			element.dataset?.src,
+		];
+
+		return this.resolveFirstPathCandidate(rawCandidates);
+	}
+
+	private resolveFirstPathCandidate(rawCandidates: Array<string | null | undefined>): string | null {
+		for (const raw of rawCandidates) {
+			if (!raw) continue;
+			const cleaned = raw.split('#')[0].split('^')[0].trim();
+			if (!cleaned) continue;
+			const resolved = this.app.metadataCache.getFirstLinkpathDest(cleaned, '');
+			if (resolved) {
+				return resolved.path;
+			}
+			const abstractFile = this.app.vault.getAbstractFileByPath(cleaned);
+			if (abstractFile instanceof TFile) {
+				return abstractFile.path;
+			}
+		}
+
+		return null;
+	}
+
+	private findMetadataContainer(container: HTMLElement): HTMLElement | null {
+		return container.querySelector<HTMLElement>(`${SELECTOR_METADATA_CONTAINER}, .cm-obsidian-frontmatter`);
+	}
+
+	private async processEmbedContainer(
+		container: HTMLElement,
+		filePath: string,
+		allowRule: (rule: Rule) => boolean,
+		context: 'embed' | 'canvas'
+	): Promise<void> {
+		container.dataset.sourcePath = filePath;
+		const applicableRulesWithContent = await this._getApplicableRulesAndContent(filePath);
+		const filteredRules = applicableRulesWithContent.filter(({ rule }) => allowRule(rule));
+		await this.removeInjectedContentDOM(container);
+
+		if (filteredRules.length === 0) {
+			return;
+		}
+
+		const headerContentGroups: { normal: string[], aboveProperties: string[] } = { normal: [], aboveProperties: [] };
+		const footerContentGroups: { normal: string[] } = { normal: [] };
+		const sectionHeaderRules: Array<{ rule: Rule; contentText: string; index: number }> = [];
+		const contentSeparator = "\n\n";
+
+		for (const { rule, contentText, index } of filteredRules) {
+			if (!contentText || contentText.trim() === "") continue;
+
+			if (rule.renderLocation === RenderLocation.Header) {
+				if (rule.renderAboveProperties) {
+					headerContentGroups.aboveProperties.push(contentText);
+				} else {
+					headerContentGroups.normal.push(contentText);
+				}
+			} else if (rule.renderLocation === RenderLocation.Footer) {
+				footerContentGroups.normal.push(contentText);
+			} else if (rule.renderLocation === RenderLocation.SectionHeader) {
+				sectionHeaderRules.push({ rule, contentText, index });
+			}
+			// Skip sidebar rules for embeds
+		}
+
+		if (headerContentGroups.normal.length > 0) {
+			const combinedContent = headerContentGroups.normal.join(contentSeparator);
+			await this.injectContentIntoPopoverSection(container, combinedContent, 'header', false, filePath, context);
+		}
+
+		if (headerContentGroups.aboveProperties.length > 0) {
+			const combinedContent = headerContentGroups.aboveProperties.join(contentSeparator);
+			await this.injectContentIntoPopoverSection(container, combinedContent, 'header', true, filePath, context);
+		}
+
+		if (footerContentGroups.normal.length > 0) {
+			const combinedContent = footerContentGroups.normal.join(contentSeparator);
+			await this.injectContentIntoPopoverSection(container, combinedContent, 'footer', false, filePath, context);
+		}
+
+		for (const { rule, contentText, index } of sectionHeaderRules) {
+			await this.injectContentIntoPopoverSectionHeader(container, contentText, rule, index, filePath);
+		}
+	}
+
+	private async processEmbedsInView(view: MarkdownView): Promise<void> {
+		if (!this.settings.enableEmbedRendering) {
+			return;
+		}
+		const embeds = Array.from(view.containerEl.querySelectorAll<HTMLElement>('.markdown-embed'));
+		this.logEmbedCanvasDebug('Embed scan in view', {
+			viewPath: view.file?.path,
+			embedCount: embeds.length
+		});
+		for (const embed of embeds) {
+			if (embed.closest('.popover.hover-popover')) {
+				continue;
+			}
+			if (this.isEmbedInCanvas(embed)) {
+				continue;
+			}
+			const filePath = this.extractEmbedFilePath(embed);
+			if (!filePath) {
+				this.logEmbedCanvasDebug('Embed path not resolved', {
+					embedClass: embed.className
+				});
+				continue;
+			}
+			await this.processEmbedContainer(embed, filePath, (rule) => rule.showInEmbed !== false, 'embed');
+		}
+		if (view.file?.path) {
+			this.embedLastScanByView.set(view, { filePath: view.file.path, time: Date.now() });
+		}
+	}
+
+	private getCanvasNodes(): HTMLElement[] {
+		const canvasRoot = document.querySelector('.canvas');
+		const scopedNodes = canvasRoot ? Array.from(canvasRoot.querySelectorAll<HTMLElement>('.canvas-node')) : [];
+		if (scopedNodes.length > 0) {
+			return scopedNodes;
+		}
+		return Array.from(document.querySelectorAll<HTMLElement>('.canvas-node'));
+	}
+
+	private isCanvasActive(): boolean {
+		return !!document.querySelector('.workspace-leaf.mod-active .canvas, .workspace-leaf.mod-active .canvas-wrapper');
+	}
+
+	private async processCanvasEmbeds(): Promise<void> {
+		if (!this.settings.enableCanvasRendering) {
+			return;
+		}
+		if (!this.isCanvasActive()) {
+			return;
+		}
+		const canvasRoot = document.querySelector('.canvas');
+		if (!canvasRoot) {
+			return;
+		}
+		const canvasNodes = this.getCanvasNodes();
+		this.logEmbedCanvasDebug('Canvas embed scan', {
+			nodeCount: canvasNodes.length
+		});
+		if (canvasNodes.length === 0) {
+			return;
+		}
+		for (const node of canvasNodes) {
+			const embedContainer = node.querySelector<HTMLElement>('.canvas-node-content.markdown-embed, .canvas-node-content .markdown-embed');
+			if (!embedContainer) {
+				continue;
+			}
+			if (node.classList.contains('is-editing') || embedContainer.querySelector('.cm-editor')) {
+				await this.removeInjectedContentDOM(embedContainer);
+				continue;
+			}
+			const filePath = this.extractCanvasNodePath(node);
+			if (!filePath) {
+				await this.removeInjectedContentDOM(embedContainer);
+				this.logEmbedCanvasDebug('Canvas embed path not resolved', {
+					embedClass: embedContainer.className
+				});
+				continue;
+			}
+			this.logEmbedCanvasDebug('Canvas embed resolved', {
+				filePath
+			});
+			await this.processEmbedContainer(embedContainer, filePath, (rule) => rule.showInCanvas !== false, 'canvas');
+		}
 	}
 
 	/**
@@ -784,7 +1187,8 @@ export default class VirtualFooterPlugin extends Plugin {
 		content: string, 
 		location: 'header' | 'footer', 
 		special: boolean, 
-		filePath: string
+		filePath: string,
+		context?: 'embed' | 'canvas'
 	): Promise<void> {
 		const isHeader = location === 'header';
 		const cssClass = isHeader ? CSS_HEADER_GROUP_ELEMENT : CSS_FOOTER_GROUP_ELEMENT;
@@ -793,8 +1197,15 @@ export default class VirtualFooterPlugin extends Plugin {
 		// Create new content container
 		const groupDiv = document.createElement('div') as HTMLElementWithComponent;
 		groupDiv.className = `${CSS_DYNAMIC_CONTENT_ELEMENT} ${cssClass}`;
+		groupDiv.dataset.sourcePath = filePath;
 		if (special) {
 			groupDiv.classList.add(specialClass);
+		}
+		if (context === 'embed') {
+			groupDiv.classList.add('virtual-footer-embedded-content');
+		}
+		if (context === 'canvas') {
+			groupDiv.classList.add('virtual-footer-canvas-content');
 		}
 		
 		// Add additional CSS classes for consistency with main view injection
@@ -830,7 +1241,7 @@ export default class VirtualFooterPlugin extends Plugin {
 			if (isHeader) {
 				if (special) {
 					// Try to find metadata container first (same as main view logic)
-					targetParent = container.querySelector<HTMLElement>(SELECTOR_METADATA_CONTAINER);
+					targetParent = this.findMetadataContainer(container);
 				}
 				// If no metadata container or special is false, use appropriate header area
 				if (!targetParent) {
@@ -844,6 +1255,9 @@ export default class VirtualFooterPlugin extends Plugin {
 					} else {
 						// In preview mode, use regular header area
 						targetParent = container.querySelector<HTMLElement>(SELECTOR_PREVIEW_HEADER_AREA);
+						if (!targetParent) {
+							targetParent = container.querySelector<HTMLElement>('.markdown-preview-view, .markdown-embed-content');
+						}
 					}
 				}
 			} else { // Footer
@@ -1180,6 +1594,10 @@ export default class VirtualFooterPlugin extends Plugin {
 			});
 			this.ensurePreviewObserver(view);
 		}
+
+		this.ensureEmbedObserver(view);
+		await this.processEmbedsInView(view);
+		this.queueCanvasEmbedRefresh();
 	}
 
 	private normalizeSectionHeaderText(text: string): string {
@@ -1912,6 +2330,18 @@ export default class VirtualFooterPlugin extends Plugin {
 			pending.footerDiv?.component?.unload();
 			this.pendingPreviewInjections.delete(view);
 		}
+
+		// Disconnect embed observer for this view
+		const embedObserver = this.embedObservers.get(view);
+		if (embedObserver) {
+			embedObserver.disconnect();
+			this.embedObservers.delete(view);
+		}
+		const embedRefreshTimeout = this.embedRefreshTimeouts.get(view);
+		if (embedRefreshTimeout) {
+			window.clearTimeout(embedRefreshTimeout);
+			this.embedRefreshTimeouts.delete(view);
+		}
 	}
 
 	/**
@@ -2271,6 +2701,18 @@ export default class VirtualFooterPlugin extends Plugin {
 			if (typeof loadedData.smartPropertyLinks === 'boolean') {
 				this.settings.smartPropertyLinks = loadedData.smartPropertyLinks;
 			}
+			// Load the new enableEmbedRendering setting if it exists
+			if (typeof loadedData.enableEmbedRendering === 'boolean') {
+				this.settings.enableEmbedRendering = loadedData.enableEmbedRendering;
+			}
+			// Load the new enableCanvasRendering setting if it exists
+			if (typeof loadedData.enableCanvasRendering === 'boolean') {
+				this.settings.enableCanvasRendering = loadedData.enableCanvasRendering;
+			}
+			// Load the new debugEmbedCanvas setting if it exists
+			if (typeof loadedData.debugEmbedCanvas === 'boolean') {
+				this.settings.debugEmbedCanvas = loadedData.debugEmbedCanvas;
+			}
 		}
 
 		// Ensure there's at least one rule, and all rules are normalized
@@ -2294,6 +2736,15 @@ export default class VirtualFooterPlugin extends Plugin {
 		}
 		if (typeof this.settings.smartPropertyLinks !== 'boolean') {
 			this.settings.smartPropertyLinks = DEFAULT_SETTINGS.smartPropertyLinks!;
+		}
+		if (typeof this.settings.enableEmbedRendering !== 'boolean') {
+			this.settings.enableEmbedRendering = DEFAULT_SETTINGS.enableEmbedRendering!;
+		}
+		if (typeof this.settings.enableCanvasRendering !== 'boolean') {
+			this.settings.enableCanvasRendering = DEFAULT_SETTINGS.enableCanvasRendering!;
+		}
+		if (typeof this.settings.debugEmbedCanvas !== 'boolean') {
+			this.settings.debugEmbedCanvas = DEFAULT_SETTINGS.debugEmbedCanvas!;
 		}
 	}
 
@@ -2350,6 +2801,8 @@ export default class VirtualFooterPlugin extends Plugin {
 			dataviewQuery: loadedRule.dataviewQuery || '',
 			footerFilePath: loadedRule.footerFilePath || '', // Retained name for compatibility
 			showInPopover: loadedRule.showInPopover !== undefined ? loadedRule.showInPopover : true,
+			showInEmbed: loadedRule.showInEmbed !== undefined ? loadedRule.showInEmbed : true,
+			showInCanvas: loadedRule.showInCanvas !== undefined ? loadedRule.showInCanvas : true,
 		};
 
 		// Populate type-specific fields
@@ -2482,6 +2935,8 @@ export default class VirtualFooterPlugin extends Plugin {
 
 		// Normalize popover visibility setting
 		rule.showInPopover = typeof originalRule.showInPopover === 'boolean' ? originalRule.showInPopover : true;
+		rule.showInEmbed = typeof originalRule.showInEmbed === 'boolean' ? originalRule.showInEmbed : true;
+		rule.showInCanvas = typeof originalRule.showInCanvas === 'boolean' ? originalRule.showInCanvas : true;
 	}
 
 	/**
@@ -2722,6 +3177,36 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 					this.plugin.settings.smartPropertyLinks = value;
 					await this.plugin.saveSettings();
 				}));
+
+		new Setting(containerEl)
+			.setName('Embed rendering')
+			.setDesc('If enabled, virtual content will render inside embedded notes such as ![[Link]].')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.enableEmbedRendering!)
+				.onChange(async (value) => {
+					this.plugin.settings.enableEmbedRendering = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Canvas rendering')
+			.setDesc('If enabled, virtual content can be rendered inside Canvas note cards. Scanning canvas nodes can be expensive on large canvases. Restart Obsidian after changing this setting.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.enableCanvasRendering!)
+				.onChange(async (value) => {
+					this.plugin.settings.enableCanvasRendering = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Developer: Debug embed/canvas rendering')
+			.setDesc('If enabled, logs embed/canvas path resolution details to the developer console for troubleshooting.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.debugEmbedCanvas!)
+				.onChange(async (value) => {
+					this.plugin.settings.debugEmbedCanvas = value;
+					await this.plugin.saveSettings();
+				}));
 		
 		containerEl.createEl('h3', { text: 'Rules' });
 
@@ -2875,7 +3360,7 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 
 			new Setting(ruleContentContainer)
 				.setName('Folder path')
-				.setDesc('Path for the rule. Use "" for all files, "/" for root folder, or "FolderName/" for specific folders (ensure trailing slash for non-root folders).')
+				.setDesc('Path for the rule. Leave empty for all files, "/" for root folder, or "FolderName/" for specific folders (ensure trailing slash for non-root folders).')
 				.addText(text => {
 					text.setPlaceholder('e.g., Meetings/, /, or empty for all')
 						.setValue(rule.path || '')
@@ -3186,11 +3671,33 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 		// --- Popover Visibility Setting ---
 		new Setting(ruleContentContainer)
 			.setName('Show in popover views')
-			.setDesc('If enabled, this rule\'s content will be shown when viewing notes in hover popovers. If disabled, the content will be hidden in popover views.')
+			.setDesc('If enabled, this rule\'s content will be shown when viewing notes in hover popovers.')
 			.addToggle(toggle => toggle
 				.setValue(rule.showInPopover !== undefined ? rule.showInPopover : true)
 				.onChange(async (value) => {
 					rule.showInPopover = value;
+					await this.plugin.saveSettings();
+				}));
+
+		// --- Embed Visibility Setting ---
+		new Setting(ruleContentContainer)
+			.setName('Show in embedded notes')
+			.setDesc('If enabled, this rule\'s content will be shown inside embedded notes such as ![[Link]]. The global setting "Embed rendering" must also be enabled for this to work.')
+			.addToggle(toggle => toggle
+				.setValue(rule.showInEmbed !== undefined ? rule.showInEmbed : true)
+				.onChange(async (value) => {
+					rule.showInEmbed = value;
+					await this.plugin.saveSettings();
+				}));
+
+		// --- Canvas Visibility Setting ---
+		new Setting(ruleContentContainer)
+			.setName('Show in canvas cards')
+			.setDesc('If enabled, this rule\'s content will be shown inside note cards on Canvas. The global setting "Canvas rendering" must also be enabled for this to work. Scanning canvas nodes can be expensive on large canvases.')
+			.addToggle(toggle => toggle
+				.setValue(rule.showInCanvas !== undefined ? rule.showInCanvas : true)
+				.onChange(async (value) => {
+					rule.showInCanvas = value;
 					await this.plugin.saveSettings();
 				}));
 		
