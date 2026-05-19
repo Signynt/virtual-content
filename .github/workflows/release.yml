@@ -13,8 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      id-token: write          # Required for generating the OIDC token
-      attestations: write      # Required for writing the attestation
+      id-token: write
+      attestations: write
 
     steps:
       - name: Checkout code
@@ -32,7 +32,6 @@ jobs:
       - name: Build plugin
         run: npm run build --if-present
 
-      # --- New Attestation Step ---
       - name: Attest Build Provenance
         uses: actions/attest-build-provenance@v1
         with:
