@@ -156,6 +156,8 @@ interface VirtualFooterSettings {
 interface HTMLElementWithComponent extends HTMLElement {
 	/** The Obsidian Component associated with this HTML element. */
 	component?: Component;
+	/** The MutationObserver for monitoring style changes. */
+	observer?: MutationObserver;
 }
 
 // --- Constants ---
@@ -2277,6 +2279,27 @@ export default class VirtualFooterPlugin extends Plugin {
 		const containerEl = view.containerEl.querySelector<HTMLDivElement>(SELECTOR_EDITOR_CONTENT_CONTAINER_PARENT);
 		contentEl?.classList.add(CSS_VIRTUAL_FOOTER_CM_PADDING);
 		containerEl?.classList.add(CSS_VIRTUAL_FOOTER_REMOVE_FLEX);
+
+		// Override the inline padding-bottom style
+		if (contentEl) {
+			const observedContentEl = contentEl as HTMLDivElement & { observer?: MutationObserver };
+			contentEl.style.setProperty('padding-bottom', 'var(--p-spacing)', 'important');
+			
+			// Watch for the style being reset and reapply if needed
+			const observer = new MutationObserver(() => {
+				const currentPadding = contentEl.style.paddingBottom;
+				if (!currentPadding || currentPadding === '650px') {
+					contentEl.style.setProperty('padding-bottom', 'var(--p-spacing)', 'important');
+				}
+			});
+			
+			observer.observe(contentEl, { attributes: true, attributeFilter: ['style'] });
+			
+			// Store observer so you can disconnect it later
+			if (!observedContentEl.observer) {
+				observedContentEl.observer = observer;
+			}
+		}
 	}
 
 	/**
@@ -2289,6 +2312,16 @@ export default class VirtualFooterPlugin extends Plugin {
 		const containerEl = container.querySelector<HTMLDivElement>(SELECTOR_EDITOR_CONTENT_CONTAINER_PARENT);
 		contentEl?.classList.remove(CSS_VIRTUAL_FOOTER_CM_PADDING);
 		containerEl?.classList.remove(CSS_VIRTUAL_FOOTER_REMOVE_FLEX);
+
+		// Remove the inline padding-bottom style
+		if (contentEl) {
+			const observedContentEl = contentEl as HTMLDivElement & { observer?: MutationObserver };
+			contentEl.style.removeProperty('padding-bottom');
+			if (observedContentEl.observer) {
+				observedContentEl.observer.disconnect();
+				delete observedContentEl.observer;
+			}
+		}
 	}
 
 	/**
