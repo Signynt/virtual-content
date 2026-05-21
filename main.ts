@@ -290,8 +290,8 @@ export class MultiSuggest extends AbstractInputSuggest<string> {
 
 export class VirtualContentView extends ItemView {
 	plugin: VirtualFooterPlugin;
-	viewContent: HTMLElement;
-	component: Component;
+	viewContent: HTMLElement | null = null;
+	component: Component = new Component();
 	private contentProvider: () => { content: string, sourcePath: string } | null;
 	private viewId: string;
 	private tabName: string;
@@ -361,7 +361,7 @@ export class VirtualContentView extends ItemView {
  * based on configurable rules.
  */
 export default class VirtualFooterPlugin extends Plugin {
-	settings: VirtualFooterSettings;
+	settings: VirtualFooterSettings = DEFAULT_SETTINGS;
 	/** Stores pending content injections for preview mode, awaiting DOM availability. */
 	private pendingPreviewInjections: WeakMap<MarkdownView, { 
 		headerDiv?: HTMLElementWithComponent, 
@@ -2795,7 +2795,8 @@ export default class VirtualFooterPlugin extends Plugin {
 
 		// Determine rule type, defaulting if ambiguous
 		let type: RuleType;
-		if (Object.values(RuleType).includes(loadedRule.type as RuleType)) {
+		// Avoid Object.values for older TS lib targets: check enum values via keys
+		if ((Object.keys(RuleType) as string[]).some(k => (RuleType as any)[k] === loadedRule.type)) {
 			type = loadedRule.type as RuleType;
 		} else if (typeof loadedRule.folderPath === 'string') { // Legacy field
 			type = RuleType.Folder;
@@ -2805,7 +2806,7 @@ export default class VirtualFooterPlugin extends Plugin {
 
 		// Determine content source, defaulting if ambiguous
 		let contentSource: ContentSource;
-		if (Object.values(ContentSource).includes(loadedRule.contentSource as ContentSource)) {
+		if ((Object.keys(ContentSource) as string[]).some(k => (ContentSource as any)[k] === loadedRule.contentSource)) {
 			contentSource = loadedRule.contentSource as ContentSource;
 		} else {
 			// If folderPath existed (legacy) and contentSource is undefined, it was likely Text
@@ -3385,7 +3386,7 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 					.addOption('is', 'is')
 					.addOption('not', 'not')
 					.setValue(rule.negated ? 'not' : 'is')
-					.onChange(async (value: 'is' | 'not') => {
+					.onChange(async (value: string) => {
 						rule.negated = value === 'not';
 						await this.plugin.saveSettings();
 					})
@@ -3434,7 +3435,7 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 					.addOption('is', 'is')
 					.addOption('not', 'not')
 					.setValue(rule.negated ? 'not' : 'is')
-					.onChange(async (value: 'is' | 'not') => {
+					.onChange(async (value: string) => {
 						rule.negated = value === 'not';
 						await this.plugin.saveSettings();
 					})
@@ -3477,7 +3478,7 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 					.addOption('is', 'is')
 					.addOption('not', 'not')
 					.setValue(rule.negated ? 'not' : 'is')
-					.onChange(async (value: 'is' | 'not') => {
+					.onChange(async (value: string) => {
 						rule.negated = value === 'not';
 						await this.plugin.saveSettings();
 					})
@@ -3520,7 +3521,7 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 					.addOption('is', 'is')
 					.addOption('not', 'not')
 					.setValue(rule.negated ? 'not' : 'is')
-					.onChange(async (value: 'is' | 'not') => {
+					.onChange(async (value: string) => {
 						rule.negated = value === 'not';
 						await this.plugin.saveSettings();
 					})
@@ -3682,8 +3683,8 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 					.addOption('top', 'Top of section')
 					.addOption('bottom', 'Bottom of section')
 					.setValue(rule.sectionHeaderPlacement || 'top')
-					.onChange(async (value: SectionHeaderPlacement) => {
-						rule.sectionHeaderPlacement = value;
+					.onChange(async (value: string) => {
+						rule.sectionHeaderPlacement = value as SectionHeaderPlacement;
 						await this.plugin.saveSettings();
 					}));
 		}
@@ -3804,8 +3805,8 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 				.addOption('any', 'Any condition')
 				.addOption('all', 'All conditions')
 				.setValue(rule.multiConditionLogic || 'any')
-				.onChange(async (value: 'any' | 'all') => {
-					rule.multiConditionLogic = value;
+				.onChange(async (value) => {
+					rule.multiConditionLogic = value as 'any' | 'all';
 					await this.plugin.saveSettings();
 				}));
 
@@ -3847,7 +3848,7 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 				.addOption('is', 'is')
 				.addOption('not', 'not')
 				.setValue(condition.negated ? 'not' : 'is')
-				.onChange(async (value: 'is' | 'not') => {
+				.onChange(async (value: string) => {
 					condition.negated = value === 'not';
 					await this.plugin.saveSettings();
 				})
@@ -3857,8 +3858,8 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 				.addOption('tag', 'Tag')
 				.addOption('property', 'Property')
 				.setValue(condition.type)
-				.onChange(async (value: 'folder' | 'tag' | 'property') => {
-					condition.type = value;
+				.onChange(async (value: string) => {
+					condition.type = value as 'folder' | 'tag' | 'property';
 					// Reset fields when type changes
 					delete condition.path;
 					delete condition.recursive;
