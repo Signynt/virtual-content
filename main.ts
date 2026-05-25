@@ -2280,25 +2280,30 @@ export default class VirtualFooterPlugin extends Plugin {
 		contentEl?.classList.add(CSS_VIRTUAL_FOOTER_CM_PADDING);
 		containerEl?.classList.add(CSS_VIRTUAL_FOOTER_REMOVE_FLEX);
 
-		// Override the inline padding-bottom style
+		// Keep Live Preview bottom spacing stable even when Obsidian rewrites inline styles.
 		if (contentEl) {
 			const observedContentEl = contentEl as HTMLDivElement & { observer?: MutationObserver };
-			contentEl.style.setProperty('padding-bottom', 'var(--p-spacing)', 'important');
-			
-			// Watch for the style being reset and reapply if needed
-			const observer = new MutationObserver(() => {
-				const currentPadding = contentEl.style.paddingBottom;
-				if (!currentPadding || currentPadding === '650px') {
-					contentEl.style.setProperty('padding-bottom', 'var(--p-spacing)', 'important');
+			const expectedPadding = 'var(--p-spacing)';
+			const enforcePadding = () => {
+				const currentPadding = contentEl.style.getPropertyValue('padding-bottom');
+				const currentPriority = contentEl.style.getPropertyPriority('padding-bottom');
+				if (currentPadding !== expectedPadding || currentPriority !== 'important') {
+					contentEl.style.setProperty('padding-bottom', expectedPadding, 'important');
 				}
+			};
+
+			enforcePadding();
+			
+			// Watch for style mutations and reapply if needed.
+			observedContentEl.observer?.disconnect();
+			const observer = new MutationObserver(() => {
+				enforcePadding();
 			});
 			
 			observer.observe(contentEl, { attributes: true, attributeFilter: ['style'] });
-			
-			// Store observer so you can disconnect it later
-			if (!observedContentEl.observer) {
-				observedContentEl.observer = observer;
-			}
+
+			// Store observer so it can be disconnected during cleanup.
+			observedContentEl.observer = observer;
 		}
 	}
 
