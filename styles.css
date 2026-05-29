@@ -9,11 +9,11 @@
 }
 
 .virtual-footer-footer-group{
-    min-height: 528px;
+    padding-bottom: var(--virtual-footer-bottom-padding, 240px);
 }
 
 .virtual-footer-footer-group.virtual-footer-above-backlinks {
-    min-height: 100px;
+    padding-bottom: 0;
 }
 
 .virtual-footer-embedded-content.virtual-footer-header-group,

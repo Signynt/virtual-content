@@ -206,6 +206,10 @@ const CSS_SECTION_HEADER_GROUP_ELEMENT = 'virtual-footer-section-header-group';
 const CSS_VIRTUAL_FOOTER_CM_PADDING = 'virtual-footer-cm-padding'; // For CodeMirror live preview footer spacing
 const CSS_VIRTUAL_FOOTER_REMOVE_FLEX = 'virtual-footer-remove-flex'; // For CodeMirror live preview footer layout
 const CSS_ABOVE_BACKLINKS = 'virtual-footer-above-backlinks'; // For removing min-height when above backlinks
+const CSS_VIRTUAL_FOOTER_BOTTOM_PADDING_VAR = '--virtual-footer-bottom-padding';
+const VIRTUAL_FOOTER_BOTTOM_PADDING_MIN = 200;
+const VIRTUAL_FOOTER_BOTTOM_PADDING_MAX = 700;
+const VIRTUAL_FOOTER_BOTTOM_PADDING_RATIO = 0.6;
 
 // DOM Selectors for targeting elements in Obsidian's interface
 const SELECTOR_EDITOR_CONTENT_AREA = '.cm-editor .cm-content';
@@ -383,6 +387,7 @@ export default class VirtualFooterPlugin extends Plugin {
 	private embedObservers: WeakMap<MarkdownView, MutationObserver> = new WeakMap();
 	private embedRefreshTimeouts: WeakMap<MarkdownView, number> = new WeakMap();
 	private embedLastScanByView: WeakMap<MarkdownView, { filePath: string; time: number }> = new WeakMap();
+	private footerPaddingObservers: WeakMap<MarkdownView, ResizeObserver> = new WeakMap();
 	private canvasRefreshTimeout: number | null = null;
 	private canvasRefreshInProgress = false;
 	private canvasInteractionHandler: ((event: Event) => void) | null = null;
@@ -1593,6 +1598,12 @@ export default class VirtualFooterPlugin extends Plugin {
 			this.applyLivePreviewFooterStyles(view);
 		}
 
+		if (hasFooterRule && (shouldRenderInReading || shouldRenderInLivePreview || shouldRenderInSource)) {
+			this.applyFooterBottomPadding(view);
+		} else {
+			this.removeFooterBottomPadding(view);
+		}
+
 		let pendingHeaderDiv: HTMLElementWithComponent | null = null;
 		let pendingFooterDiv: HTMLElementWithComponent | null = null;
 		let pendingHeaderAbovePropertiesDiv: HTMLElementWithComponent | null = null;
@@ -2331,6 +2342,44 @@ export default class VirtualFooterPlugin extends Plugin {
 	 * Applies CSS classes to adjust CodeMirror (Live Preview) layout for footer content.
 	 * @param view The MarkdownView in Live Preview mode.
 	 */
+	private computeFooterBottomPaddingPx(containerHeight: number): number {
+		const rawPadding = Math.round(containerHeight * VIRTUAL_FOOTER_BOTTOM_PADDING_RATIO);
+		return Math.max(VIRTUAL_FOOTER_BOTTOM_PADDING_MIN, Math.min(VIRTUAL_FOOTER_BOTTOM_PADDING_MAX, rawPadding));
+	}
+
+	private applyFooterBottomPadding(view: MarkdownView): void {
+		const updatePadding = () => {
+			const containerHeight = view.containerEl.clientHeight;
+			if (!containerHeight) {
+				return;
+			}
+			const paddingPx = this.computeFooterBottomPaddingPx(containerHeight);
+			view.containerEl.style.setProperty(CSS_VIRTUAL_FOOTER_BOTTOM_PADDING_VAR, `${paddingPx}px`);
+		};
+
+		updatePadding();
+		if (!this.footerPaddingObservers.has(view)) {
+			const observer = new ResizeObserver(() => {
+				updatePadding();
+			});
+			observer.observe(view.containerEl);
+			this.footerPaddingObservers.set(view, observer);
+		}
+	}
+
+	private removeFooterBottomPadding(view: MarkdownView): void {
+		const observer = this.footerPaddingObservers.get(view);
+		if (observer) {
+			observer.disconnect();
+			this.footerPaddingObservers.delete(view);
+		}
+		view.containerEl.style.removeProperty(CSS_VIRTUAL_FOOTER_BOTTOM_PADDING_VAR);
+	}
+
+	/**
+	 * Applies CSS classes to adjust CodeMirror (Live Preview) layout for footer content.
+	 * @param view The MarkdownView in Live Preview mode.
+	 */
 	private applyLivePreviewFooterStyles(view: MarkdownView): void {
 		const contentEl = view.containerEl.querySelector<HTMLDivElement>(SELECTOR_EDITOR_CONTENT_AREA);
 		const containerEl = view.containerEl.querySelector<HTMLDivElement>(SELECTOR_EDITOR_CONTENT_CONTAINER_PARENT);
@@ -2409,6 +2458,7 @@ export default class VirtualFooterPlugin extends Plugin {
 	 */
 	private async removeDynamicContentFromView(view: MarkdownView, preserveSectionHeader: boolean = false): Promise<void> {
 		this.removeLivePreviewFooterStyles(view);
+		this.removeFooterBottomPadding(view);
 		await this.removeInjectedContentDOM(view.containerEl, preserveSectionHeader);
 
 		// Disconnect and remove observer for this view
