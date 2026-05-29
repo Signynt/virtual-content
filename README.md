@@ -36,7 +36,9 @@ SORT file.link DESC
 Instead of having to add this to each file, I can simply add a rule to the folder "Authors" which contains the above text, and it will be automatically shown in each file.
 I can do this with as many folders as I like.
 
-![virtual-footer-screenshot](https://github.com/user-attachments/assets/1251ece2-ad92-4393-9284-6c51d3567b6b)
+![virtual-footer-screenshot](https://github.com/user-attachments/assets/391cf294-9b28-4408-b5ef-673bdf400771)
+
+![virtual-content-screenshot-settings](https://github.com/user-attachments/assets/0f25b2ea-0bc6-48b6-88fd-4fcb2599efa2)
 
 ![image](https://github.com/user-attachments/assets/1caa8991-eec1-42a2-96da-ad5526acbc36)
 
