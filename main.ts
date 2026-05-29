@@ -3,6 +3,8 @@ import {
 	Plugin,
 	PluginSettingTab,
 	Setting,
+	Modal,
+	ButtonComponent,
 	MarkdownView,
 	MarkdownRenderer,
 	AbstractInputSuggest,
@@ -11,7 +13,6 @@ import {
 	getAllTags,
 	ItemView,
 	WorkspaceLeaf,
-	debounce,
 } from 'obsidian';
 
 // --- Enums ---
@@ -3124,6 +3125,553 @@ export default class VirtualFooterPlugin extends Plugin {
 
 // --- Settings Tab Class ---
 
+type RuleEditorProviders = {
+	getAvailableFolderPaths: () => Set<string>;
+	getAvailableTags: () => Set<string>;
+	getAvailableMarkdownFilePaths: () => Set<string>;
+	getAvailablePropertyNames: () => Set<string>;
+};
+
+type RuleEditorOptions = {
+	title: string;
+	onSave: (rule: Rule) => Promise<void> | void;
+	onCancel?: () => void;
+	providers: RuleEditorProviders;
+};
+
+class RuleEditorModal extends Modal {
+	private workingRule: Rule;
+	private didSave = false;
+
+	constructor(app: App, private plugin: VirtualFooterPlugin, rule: Rule, private options: RuleEditorOptions) {
+		super(app);
+		this.workingRule = RuleEditorModal.cloneRule(rule);
+		this.setTitle(options.title);
+	}
+
+	onOpen(): void {
+		this.modalEl.addClass('mod-lg');
+		this.render();
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+		if (!this.didSave) {
+			this.options.onCancel?.();
+		}
+	}
+
+	private static cloneRule(rule: Rule): Rule {
+		return JSON.parse(JSON.stringify(rule));
+	}
+
+	private render(): void {
+		this.contentEl.empty();
+		this.renderRuleEditor(this.contentEl);
+		this.renderButtons(this.contentEl);
+	}
+
+	private renderButtons(containerEl: HTMLElement): void {
+		const buttonsEl = containerEl.createDiv({ cls: 'modal-button-container' });
+		new ButtonComponent(buttonsEl)
+			.setButtonText('Save')
+			.setCta()
+			.onClick(() => void this.handleSave());
+		new ButtonComponent(buttonsEl)
+			.setButtonText('Cancel')
+			.onClick(() => this.close());
+	}
+
+	private async handleSave(): Promise<void> {
+		this.didSave = true;
+		this.plugin.normalizeRule(this.workingRule);
+		await this.options.onSave(this.workingRule);
+		this.close();
+	}
+
+	private renderRuleEditor(containerEl: HTMLElement): void {
+		new Setting(containerEl)
+			.setName('Rule name')
+			.setDesc('A descriptive name for this rule.')
+			.addText(text => text
+				.setPlaceholder('e.g., Project notes footer')
+				.setValue(this.workingRule.name || '')
+				.onChange((value) => {
+					this.workingRule.name = value;
+				}));
+
+		new Setting(containerEl)
+			.setName('Enabled')
+			.setDesc('If disabled, this rule will not be applied.')
+			.addToggle(toggle => toggle
+				.setValue(this.workingRule.enabled ?? true)
+				.onChange((value) => {
+					this.workingRule.enabled = value;
+				}));
+
+		new Setting(containerEl)
+			.setName('Rule type')
+			.setDesc('Apply this rule based on folder, tag, property, or a combination.')
+			.addDropdown(dropdown => dropdown
+				.addOption(RuleType.Folder, 'Folder')
+				.addOption(RuleType.Tag, 'Tag')
+				.addOption(RuleType.Property, 'Property')
+				.addOption(RuleType.Multi, 'Multi-condition')
+				.addOption(RuleType.Dataview, 'Dataview')
+				.setValue(this.workingRule.type)
+				.onChange((value: string) => {
+					this.workingRule.type = value as RuleType;
+					if (this.workingRule.type === RuleType.Multi && !this.workingRule.conditions) {
+						this.workingRule.conditions = [];
+					}
+					this.plugin.normalizeRule(this.workingRule);
+					this.render();
+				}));
+
+		this.renderTypeSpecificControls(containerEl);
+
+		new Setting(containerEl)
+			.setName('Content source')
+			.setDesc('Where to get the content from: direct text input or a separate Markdown file.')
+			.addDropdown(dropdown => dropdown
+				.addOption(ContentSource.Text, 'Direct text')
+				.addOption(ContentSource.File, 'Markdown file')
+				.setValue(this.workingRule.contentSource || ContentSource.Text)
+				.onChange((value: string) => {
+					this.workingRule.contentSource = value as ContentSource;
+					this.plugin.normalizeRule(this.workingRule);
+					this.render();
+				}));
+
+		if (this.workingRule.contentSource === ContentSource.File) {
+			new Setting(containerEl)
+				.setName('Content file path')
+				.setDesc('Path to the .md file to use as content (e.g., "templates/common-footer.md").')
+				.addText(text => {
+					text.setPlaceholder('e.g., templates/common-footer.md')
+						.setValue(this.workingRule.footerFilePath || '')
+						.onChange((value) => {
+							this.workingRule.footerFilePath = value;
+						});
+					new MultiSuggest(text.inputEl, this.options.providers.getAvailableMarkdownFilePaths(), (selectedPath) => {
+						this.workingRule.footerFilePath = selectedPath;
+						text.setValue(selectedPath);
+					}, this.plugin.app);
+				});
+		} else {
+			new Setting(containerEl)
+				.setName('Content text')
+				.setDesc('Markdown text to display. This will be rendered.')
+				.addTextArea(text => text
+					.setPlaceholder('Enter your markdown content here...')
+					.setValue(this.workingRule.footerText || '')
+					.onChange((value) => {
+						this.workingRule.footerText = value;
+					}));
+		}
+
+		new Setting(containerEl)
+			.setName('Render location')
+			.setDesc('Choose whether this rule renders its content in the note header, footer, a selected section, or a dedicated sidebar tab.')
+			.addDropdown(dropdown => dropdown
+				.addOption(RenderLocation.Footer, 'Footer')
+				.addOption(RenderLocation.Header, 'Header')
+				.addOption(RenderLocation.SectionHeader, 'Section header')
+				.addOption(RenderLocation.Sidebar, 'Sidebar')
+				.setValue(this.workingRule.renderLocation || RenderLocation.Footer)
+				.onChange((value: string) => {
+					this.workingRule.renderLocation = value as RenderLocation;
+					this.plugin.normalizeRule(this.workingRule);
+					this.render();
+				}));
+
+		this.renderLocationSpecificControls(containerEl);
+
+		new Setting(containerEl)
+			.setName('Show in popover views')
+			.setDesc('If enabled, this rule\'s content will be shown when viewing notes in hover popovers.')
+			.addToggle(toggle => toggle
+				.setValue(this.workingRule.showInPopover !== undefined ? this.workingRule.showInPopover : true)
+				.onChange((value) => {
+					this.workingRule.showInPopover = value;
+				}));
+
+		new Setting(containerEl)
+			.setName('Show in embedded notes')
+			.setDesc('If enabled, this rule\'s content will be shown inside embedded notes such as ![[Link]].')
+			.addToggle(toggle => toggle
+				.setValue(this.workingRule.showInEmbed !== undefined ? this.workingRule.showInEmbed : true)
+				.onChange((value) => {
+					this.workingRule.showInEmbed = value;
+				}));
+
+		new Setting(containerEl)
+			.setName('Show in canvas cards')
+			.setDesc('If enabled, this rule\'s content will be shown inside note cards on Canvas.')
+			.addToggle(toggle => toggle
+				.setValue(this.workingRule.showInCanvas !== undefined ? this.workingRule.showInCanvas : true)
+				.onChange((value) => {
+					this.workingRule.showInCanvas = value;
+				}));
+	}
+
+	private renderTypeSpecificControls(containerEl: HTMLElement): void {
+		if (this.workingRule.type === RuleType.Folder) {
+			new Setting(containerEl)
+				.setName('Condition')
+				.setDesc('Choose whether this condition should be met or not met.')
+				.addDropdown(dropdown => dropdown
+					.addOption('is', 'is')
+					.addOption('not', 'not')
+					.setValue(this.workingRule.negated ? 'not' : 'is')
+					.onChange((value: string) => {
+						this.workingRule.negated = value === 'not';
+					}));
+
+			new Setting(containerEl)
+				.setName('Folder path')
+				.setDesc('Leave empty for all files, "/" for root, or "FolderName/" for a specific folder.')
+				.addText(text => {
+					text.setPlaceholder('e.g., Meetings/, /, or empty for all')
+						.setValue(this.workingRule.path || '')
+						.onChange((value) => {
+							this.workingRule.path = value;
+							this.plugin.normalizeRule(this.workingRule);
+							this.render();
+						});
+					new MultiSuggest(text.inputEl, this.options.providers.getAvailableFolderPaths(), (selectedPath) => {
+						this.workingRule.path = selectedPath;
+						this.plugin.normalizeRule(this.workingRule);
+						text.setValue(selectedPath);
+						this.render();
+					}, this.plugin.app);
+				});
+
+			new Setting(containerEl)
+				.setName('Include subfolders (recursive)')
+				.setDesc('If enabled, the rule applies to files in subfolders.')
+				.addToggle(toggle => {
+					toggle.setValue(this.workingRule.recursive ?? true)
+						.onChange((value) => {
+							this.workingRule.recursive = value;
+						});
+					if (this.workingRule.path === '') {
+						toggle.setDisabled(true);
+					}
+				});
+		} else if (this.workingRule.type === RuleType.Tag) {
+			new Setting(containerEl)
+				.setName('Condition')
+				.setDesc('Choose whether this condition should be met or not met.')
+				.addDropdown(dropdown => dropdown
+					.addOption('is', 'is')
+					.addOption('not', 'not')
+					.setValue(this.workingRule.negated ? 'not' : 'is')
+					.onChange((value: string) => {
+						this.workingRule.negated = value === 'not';
+					}));
+
+			new Setting(containerEl)
+				.setName('Tag value')
+				.setDesc('Tag to match (without the # prefix).')
+				.addText(text => {
+					text.setPlaceholder('e.g., important or project/alpha')
+						.setValue(this.workingRule.tag || '')
+						.onChange((value) => {
+							this.workingRule.tag = value.startsWith('#') ? value.substring(1) : value;
+						});
+					new MultiSuggest(text.inputEl, this.options.providers.getAvailableTags(), (selectedTag) => {
+						const normalizedTag = selectedTag.startsWith('#') ? selectedTag.substring(1) : selectedTag;
+						this.workingRule.tag = normalizedTag;
+						text.setValue(normalizedTag);
+					}, this.plugin.app);
+				});
+
+			new Setting(containerEl)
+				.setName('Include subtags')
+				.setDesc('If enabled, a rule for "tag" applies to "tag/subtag" values.')
+				.addToggle(toggle => toggle
+					.setValue(this.workingRule.includeSubtags ?? false)
+					.onChange((value) => {
+						this.workingRule.includeSubtags = value;
+					}));
+		} else if (this.workingRule.type === RuleType.Property) {
+			new Setting(containerEl)
+				.setName('Condition')
+				.setDesc('Choose whether this condition should be met or not met.')
+				.addDropdown(dropdown => dropdown
+					.addOption('is', 'is')
+					.addOption('not', 'not')
+					.setValue(this.workingRule.negated ? 'not' : 'is')
+					.onChange((value: string) => {
+						this.workingRule.negated = value === 'not';
+					}));
+
+			new Setting(containerEl)
+				.setName('Property name')
+				.setDesc('The name of the Obsidian property to match.')
+				.addText(text => {
+					text.setPlaceholder('e.g., status, type, author')
+						.setValue(this.workingRule.propertyName || '')
+						.onChange((value) => {
+							this.workingRule.propertyName = value;
+						});
+					new MultiSuggest(text.inputEl, this.options.providers.getAvailablePropertyNames(), (selectedName) => {
+						this.workingRule.propertyName = selectedName;
+						text.setValue(selectedName);
+					}, this.plugin.app);
+				});
+
+			new Setting(containerEl)
+				.setName('Property value')
+				.setDesc('Leave empty to match any file that has the property.')
+				.addText(text => text
+					.setPlaceholder('e.g., complete, article, John Doe')
+					.setValue(this.workingRule.propertyValue || '')
+					.onChange((value) => {
+						this.workingRule.propertyValue = value;
+					}));
+		} else if (this.workingRule.type === RuleType.Multi) {
+			this.renderMultiConditionControls(containerEl);
+		} else if (this.workingRule.type === RuleType.Dataview) {
+			new Setting(containerEl)
+				.setName('Condition')
+				.setDesc('Choose whether this condition should be met or not met.')
+				.addDropdown(dropdown => dropdown
+					.addOption('is', 'is')
+					.addOption('not', 'not')
+					.setValue(this.workingRule.negated ? 'not' : 'is')
+					.onChange((value: string) => {
+						this.workingRule.negated = value === 'not';
+					}));
+
+			new Setting(containerEl)
+				.setName('Dataview query')
+				.setDesc('Enter a Dataview LIST query to match notes where this rule should apply.')
+				.addTextArea(text => text
+					.setPlaceholder('LIST FROM "References/Authors" WHERE startswith(file.name, "Example")')
+					.setValue(this.workingRule.dataviewQuery || '')
+					.onChange((value) => {
+						this.workingRule.dataviewQuery = value;
+					}));
+
+			const infoDiv = containerEl.createDiv('dataview-info');
+			infoDiv.createEl('p', {
+				text: 'Note: The Dataview plugin must be installed for this rule type to work.',
+				cls: 'setting-item-description',
+			});
+		}
+	}
+
+	private renderMultiConditionControls(containerEl: HTMLElement): void {
+		new Setting(containerEl)
+			.setName('Condition logic')
+			.setDesc('Choose whether any condition or all conditions must be met.')
+			.addDropdown(dropdown => dropdown
+				.addOption('any', 'Any condition')
+				.addOption('all', 'All conditions')
+				.setValue(this.workingRule.multiConditionLogic || 'any')
+				.onChange((value) => {
+					this.workingRule.multiConditionLogic = value as 'any' | 'all';
+				}));
+
+		const conditionsContainer = containerEl.createDiv('virtual-footer-conditions-container');
+		const conditions = this.workingRule.conditions ?? [];
+		conditions.forEach((condition, index) => {
+			this.renderSubConditionControls(condition, index, conditionsContainer);
+		});
+
+		new Setting(containerEl)
+			.addButton(button => button
+				.setButtonText('Add condition')
+				.setCta()
+				.onClick(() => {
+					this.workingRule.conditions = this.workingRule.conditions || [];
+					this.workingRule.conditions.push({ type: 'folder', path: '', recursive: true, negated: false });
+					this.render();
+				}));
+	}
+
+	private renderSubConditionControls(condition: SubCondition, index: number, containerEl: HTMLElement): void {
+		const conditionDiv = containerEl.createDiv('virtual-footer-sub-condition-item');
+		const setting = new Setting(conditionDiv)
+			.addDropdown(dropdown => dropdown
+				.addOption('is', 'is')
+				.addOption('not', 'not')
+				.setValue(condition.negated ? 'not' : 'is')
+				.onChange((value: string) => {
+					condition.negated = value === 'not';
+				}))
+			.addDropdown(dropdown => dropdown
+				.addOption('folder', 'Folder')
+				.addOption('tag', 'Tag')
+				.addOption('property', 'Property')
+				.setValue(condition.type)
+				.onChange((value: string) => {
+					condition.type = value as 'folder' | 'tag' | 'property';
+					delete condition.path;
+					delete condition.recursive;
+					delete condition.tag;
+					delete condition.includeSubtags;
+					delete condition.propertyName;
+					delete condition.propertyValue;
+					this.render();
+				}));
+
+		if (condition.type === 'folder') {
+			setting.addText(text => {
+				text.setPlaceholder('Folder path')
+					.setValue(condition.path || '')
+					.onChange((value) => {
+						condition.path = value;
+					});
+				new MultiSuggest(text.inputEl, this.options.providers.getAvailableFolderPaths(), (selected) => {
+					condition.path = selected;
+					text.setValue(selected);
+				}, this.plugin.app);
+			});
+			setting.addToggle(toggle => toggle
+				.setTooltip('Include subfolders')
+				.setValue(condition.recursive ?? true)
+				.onChange((value) => {
+					condition.recursive = value;
+				}));
+		} else if (condition.type === 'tag') {
+			setting.addText(text => {
+				text.setPlaceholder('Tag value (no #)')
+					.setValue(condition.tag || '')
+					.onChange((value) => {
+						condition.tag = value.startsWith('#') ? value.substring(1) : value;
+					});
+				new MultiSuggest(text.inputEl, this.options.providers.getAvailableTags(), (selected) => {
+					const normalized = selected.startsWith('#') ? selected.substring(1) : selected;
+					condition.tag = normalized;
+					text.setValue(normalized);
+				}, this.plugin.app);
+			});
+			setting.addToggle(toggle => toggle
+				.setTooltip('Include subtags')
+				.setValue(condition.includeSubtags ?? false)
+				.onChange((value) => {
+					condition.includeSubtags = value;
+				}));
+		} else if (condition.type === 'property') {
+			setting.addText(text => {
+				text.setPlaceholder('Property name')
+					.setValue(condition.propertyName || '')
+					.onChange((value) => {
+						condition.propertyName = value;
+					});
+				new MultiSuggest(text.inputEl, this.options.providers.getAvailablePropertyNames(), (selected) => {
+					condition.propertyName = selected;
+					text.setValue(selected);
+				}, this.plugin.app);
+			});
+			setting.addText(text => text
+				.setPlaceholder('Property value (optional)')
+				.setValue(condition.propertyValue || '')
+				.onChange((value) => {
+					condition.propertyValue = value;
+				}));
+		}
+
+		setting.addButton(button => button
+			.setIcon('trash')
+			.setTooltip('Delete condition')
+			.setWarning()
+			.onClick(() => {
+				this.workingRule.conditions?.splice(index, 1);
+				this.render();
+			}));
+	}
+
+	private renderLocationSpecificControls(containerEl: HTMLElement): void {
+		if (this.workingRule.renderLocation === RenderLocation.Sidebar) {
+			new Setting(containerEl)
+				.setName('Show in separate tab')
+				.setDesc('If enabled, this content appears in its own sidebar tab.')
+				.addToggle(toggle => toggle
+					.setValue(this.workingRule.showInSeparateTab ?? false)
+					.onChange((value) => {
+						this.workingRule.showInSeparateTab = value;
+						this.render();
+					}));
+
+			if (this.workingRule.showInSeparateTab) {
+				new Setting(containerEl)
+					.setName('Sidebar tab name')
+					.setDesc('If empty, a default name is used.')
+					.addText(text => text
+						.setPlaceholder('e.g., Related notes')
+						.setValue(this.workingRule.sidebarTabName || '')
+						.onChange((value) => {
+							this.workingRule.sidebarTabName = value;
+						}));
+			}
+		}
+
+		if (this.workingRule.renderLocation === RenderLocation.Header) {
+			new Setting(containerEl)
+				.setName('Render above properties')
+				.setDesc('If enabled, header content renders above frontmatter properties.')
+				.addToggle(toggle => toggle
+					.setValue(this.workingRule.renderAboveProperties || false)
+					.onChange((value) => {
+						this.workingRule.renderAboveProperties = value;
+					}));
+		}
+
+		if (this.workingRule.renderLocation === RenderLocation.SectionHeader) {
+			new Setting(containerEl)
+				.setName('Header text')
+				.setDesc('The exact heading text to target, without leading # characters.')
+				.addText(text => text
+					.setPlaceholder('e.g., Tasks')
+					.setValue(this.workingRule.sectionHeaderText || '')
+					.onChange((value) => {
+						this.workingRule.sectionHeaderText = value;
+					}));
+
+			new Setting(containerEl)
+				.setName('Header type')
+				.setDesc('Choose which heading level should be matched.')
+				.addDropdown(dropdown => dropdown
+					.addOption('h1', 'H1')
+					.addOption('h2', 'H2')
+					.addOption('h3', 'H3')
+					.addOption('h4', 'H4')
+					.addOption('h5', 'H5')
+					.addOption('h6', 'H6')
+					.setValue(this.workingRule.sectionHeaderLevel || 'h2')
+					.onChange((value: string) => {
+						this.workingRule.sectionHeaderLevel = value;
+					}));
+
+			new Setting(containerEl)
+				.setName('Section placement')
+				.setDesc('Choose whether content appears at the top or bottom of the section.')
+				.addDropdown(dropdown => dropdown
+					.addOption('top', 'Top of section')
+					.addOption('bottom', 'Bottom of section')
+					.setValue(this.workingRule.sectionHeaderPlacement || 'top')
+					.onChange((value: string) => {
+						this.workingRule.sectionHeaderPlacement = value as SectionHeaderPlacement;
+					}));
+		}
+
+		if (this.workingRule.renderLocation === RenderLocation.Footer) {
+			new Setting(containerEl)
+				.setName('Render above backlinks')
+				.setDesc('If enabled, footer content renders above embedded backlinks.')
+				.addToggle(toggle => toggle
+					.setValue(this.workingRule.renderAboveBacklinks || false)
+					.onChange((value) => {
+						this.workingRule.renderAboveBacklinks = value;
+					}));
+		}
+	}
+}
+
 /**
  * Manages the settings tab UI for the VirtualFooter plugin.
  * Allows users to configure rules for dynamic content injection.
@@ -3134,17 +3682,8 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 	private allTagsCache: Set<string> | null = null;
 	private allMarkdownFilePathsCache: Set<string> | null = null;
 	private allPropertyNamesCache: Set<string> | null = null;
-	private ruleExpandedStates: boolean[] = [];
-	private debouncedSave: () => void;
-	private debouncedSaveAndRefresh: () => void;
-
-
 	constructor(app: App, private plugin: VirtualFooterPlugin) {
 		super(app, plugin);
-		this.debouncedSave = debounce(() => this.plugin.saveSettings(), 1000, true);
-		this.debouncedSaveAndRefresh = debounce(() => {
-			this.plugin.saveSettings().then(() => this.display());
-		}, 1000, true);
 	}
 
 	/**
@@ -3220,24 +3759,102 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 		return this.allPropertyNamesCache;
 	}
 
+	getSettingDefinitions() {
+		this.clearSuggestionCaches();
+		const rules = this.plugin.settings.rules ?? [];
+		return [
+			{
+				name: 'Render in source mode',
+				desc: 'If enabled, virtual content will be rendered in source mode. By default, content only appears in Live Preview and Reading modes.',
+				control: { type: 'toggle', key: 'renderInSourceMode' },
+			},
+			{
+				name: 'Refresh on focus change',
+				desc: 'If enabled, virtual content will refresh when switching files. This can cause a slight flicker but ensures immediate updates.',
+				control: { type: 'toggle', key: 'refreshOnFileOpen' },
+			},
+			{
+				name: 'Refresh on metadata change',
+				desc: 'If enabled, virtual content will refresh when the current note\'s metadata changes.',
+				control: { type: 'toggle', key: 'refreshOnMetadataChange' },
+			},
+			{
+				name: 'Smart property links',
+				desc: 'If enabled, property conditions that look like links match against the resolved file.',
+				control: { type: 'toggle', key: 'smartPropertyLinks' },
+			},
+			{
+				name: 'Embed rendering',
+				desc: 'If enabled, virtual content will render inside embedded notes such as ![[Link]].',
+				control: { type: 'toggle', key: 'enableEmbedRendering' },
+			},
+			{
+				name: 'Canvas rendering',
+				desc: 'If enabled, virtual content can be rendered inside Canvas note cards. Restart Obsidian after changing this setting.',
+				control: { type: 'toggle', key: 'enableCanvasRendering' },
+			},
+			{
+				type: 'list',
+				heading: 'Rules',
+				emptyState: 'No rules yet.',
+				addItem: {
+					name: 'Add rule',
+					action: () => this.openNewRuleModal(),
+				},
+				onReorder: async (oldIndex: number, newIndex: number) => {
+					const rulesList = this.plugin.settings.rules;
+					const [moved] = rulesList.splice(oldIndex, 1);
+					rulesList.splice(newIndex, 0, moved);
+					await this.plugin.saveSettings();
+				},
+				onDelete: async (idx: number) => {
+					this.plugin.settings.rules.splice(idx, 1);
+					await this.plugin.saveSettings();
+					this.refreshSettingsUi();
+				},
+				items: rules.map((rule, index) => ({
+					name: this.getRuleDisplayName(rule, index),
+					desc: this.getRuleSummary(rule),
+					searchable: false,
+					render: (setting: Setting) => {
+						setting.addButton(button => button
+							.setButtonText('Edit')
+							.setCta()
+							.onClick(() => this.openEditRuleModal(index)));
+						setting.addButton(button => button
+							.setButtonText('Duplicate')
+							.onClick(() => this.duplicateRule(index)));
+					},
+				})),
+			},
+			{
+				type: 'group',
+				heading: 'Developer',
+				items: [
+					{
+						name: 'Debug embed/canvas rendering',
+						desc: 'If enabled, logs embed/canvas path resolution details to the developer console for troubleshooting.',
+						control: { type: 'toggle', key: 'debugEmbedCanvas' },
+					},
+				],
+			},
+		];
+	}
+
 	/**
 	 * Renders the settings tab UI.
-	 * This method is called by Obsidian when the settings tab is opened.
+	 * This method is called by Obsidian on versions before 1.13.0.
 	 */
 	display(): void {
 		const { containerEl } = this;
-		containerEl.empty(); // Clear previous content
+		containerEl.empty();
+		this.clearSuggestionCaches();
 
-		// --- Plugin Header ---
-		containerEl.createEl('h2', { text: 'Virtual Content Settings' });
-		containerEl.createEl('p', { text: 'Define rules to dynamically add content to the header or footer of notes based on their folder, tags, or properties.' });
-
-		// --- General Settings Section ---
 		new Setting(containerEl)
 			.setName('Render in source mode')
 			.setDesc('If enabled, virtual content will be rendered in source mode. By default, content only appears in Live Preview and Reading modes.')
 			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.renderInSourceMode!)
+				.setValue(this.plugin.settings.renderInSourceMode ?? false)
 				.onChange(async (value) => {
 					this.plugin.settings.renderInSourceMode = value;
 					await this.plugin.saveSettings();
@@ -3245,9 +3862,9 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Refresh on focus change')
-			.setDesc('If enabled, virtual content will refresh when switching files. This may cause a slight flicker but is useful if you frequently change the text of virtual content and need immediate updates. If disabled the virtual content will be updated on file open and view change (editing/reading view). To prevent virtual content in the sidebar disappearing when clicking out of a note, it will always keep the last notes virtual content open, which means new tabs will show the virtual content of the last used note. Disabled by default.')
+			.setDesc('If enabled, virtual content will refresh when switching files. This can cause a slight flicker but ensures immediate updates.')
 			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.refreshOnFileOpen!) // Value is ensured by loadSettings
+				.setValue(this.plugin.settings.refreshOnFileOpen ?? false)
 				.onChange(async (value) => {
 					this.plugin.settings.refreshOnFileOpen = value;
 					await this.plugin.saveSettings();
@@ -3255,9 +3872,9 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Refresh on metadata change')
-			.setDesc('If enabled, virtual content will refresh when the current note\'s metadata (frontmatter, tags) changes. This is useful for rules that depend on properties or tags and need to update immediately when those values change.')
+			.setDesc('If enabled, virtual content will refresh when the current note\'s metadata changes.')
 			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.refreshOnMetadataChange!)
+				.setValue(this.plugin.settings.refreshOnMetadataChange ?? false)
 				.onChange(async (value) => {
 					this.plugin.settings.refreshOnMetadataChange = value;
 					await this.plugin.saveSettings();
@@ -3265,9 +3882,9 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Smart property links')
-			.setDesc('If enabled, property conditions that look like links will match against the resolved file. This allows matching aliases or different link formats (e.g. [[Note]] matches [[Note|Alias]]).')
+			.setDesc('If enabled, property conditions that look like links match against the resolved file.')
 			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.smartPropertyLinks!)
+				.setValue(this.plugin.settings.smartPropertyLinks ?? false)
 				.onChange(async (value) => {
 					this.plugin.settings.smartPropertyLinks = value;
 					await this.plugin.saveSettings();
@@ -3277,7 +3894,7 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 			.setName('Embed rendering')
 			.setDesc('If enabled, virtual content will render inside embedded notes such as ![[Link]].')
 			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.enableEmbedRendering!)
+				.setValue(this.plugin.settings.enableEmbedRendering ?? false)
 				.onChange(async (value) => {
 					this.plugin.settings.enableEmbedRendering = value;
 					await this.plugin.saveSettings();
@@ -3285,732 +3902,210 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Canvas rendering')
-			.setDesc('If enabled, virtual content can be rendered inside Canvas note cards. Scanning canvas nodes can be expensive on large canvases. Restart Obsidian after changing this setting.')
+			.setDesc('If enabled, virtual content can be rendered inside Canvas note cards. Restart Obsidian after changing this setting.')
 			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.enableCanvasRendering!)
+				.setValue(this.plugin.settings.enableCanvasRendering ?? false)
 				.onChange(async (value) => {
 					this.plugin.settings.enableCanvasRendering = value;
 					await this.plugin.saveSettings();
 				}));
 
+		containerEl.createEl('h3', { text: 'Rules' });
+		const rules = this.plugin.settings.rules ?? [];
+		rules.forEach((rule, index) => {
+			const row = new Setting(containerEl)
+				.setName(this.getRuleDisplayName(rule, index))
+				.setDesc(this.getRuleSummary(rule));
+
+			row.addButton(button => button
+				.setButtonText('Edit')
+				.setCta()
+				.onClick(() => this.openEditRuleModal(index)));
+			row.addButton(button => button
+				.setButtonText('Duplicate')
+				.onClick(() => this.duplicateRule(index)));
+			row.addButton(button => button
+				.setIcon('arrow-up')
+				.setTooltip('Move rule up')
+				.setDisabled(index === 0)
+				.onClick(() => this.moveRule(index, index - 1)));
+			row.addButton(button => button
+				.setIcon('arrow-down')
+				.setTooltip('Move rule down')
+				.setDisabled(index === rules.length - 1)
+				.onClick(() => this.moveRule(index, index + 1)));
+			row.addButton(button => button
+				.setButtonText('Delete')
+				.setWarning()
+				.onClick(() => this.deleteRule(index)));
+		});
+
 		new Setting(containerEl)
-			.setName('Developer: Debug embed/canvas rendering')
+			.addButton(button => button
+				.setButtonText('Add rule')
+				.setCta()
+				.onClick(() => this.openNewRuleModal()));
+
+		containerEl.createEl('h3', { text: 'Developer' });
+		new Setting(containerEl)
+			.setName('Debug embed/canvas rendering')
 			.setDesc('If enabled, logs embed/canvas path resolution details to the developer console for troubleshooting.')
 			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.debugEmbedCanvas!)
+				.setValue(this.plugin.settings.debugEmbedCanvas ?? false)
 				.onChange(async (value) => {
 					this.plugin.settings.debugEmbedCanvas = value;
 					await this.plugin.saveSettings();
 				}));
-		
-		containerEl.createEl('h3', { text: 'Rules' });
+	}
 
-
-		// Invalidate caches to ensure fresh suggestions each time the tab is displayed
+	private clearSuggestionCaches(): void {
 		this.allFolderPathsCache = null;
 		this.allTagsCache = null;
 		this.allMarkdownFilePathsCache = null;
 		this.allPropertyNamesCache = null;
-
-		// Synchronize ruleExpandedStates with the current number of rules
-		const numRules = this.plugin.settings.rules.length;
-		while (this.ruleExpandedStates.length < numRules) {
-			this.ruleExpandedStates.push(false); // Default new rules to collapsed
-		}
-		if (this.ruleExpandedStates.length > numRules) {
-			this.ruleExpandedStates.length = numRules; // Truncate if rules were removed
-		}
-
-
-		const rulesContainer = containerEl.createDiv('rules-container virtual-footer-rules-container');
-
-		// Ensure settings.rules array exists and has at least one rule
-		if (!this.plugin.settings.rules) {
-			this.plugin.settings.rules = [];
-		}
-		if (this.plugin.settings.rules.length === 0) {
-			const newRule = JSON.parse(JSON.stringify(DEFAULT_SETTINGS.rules[0]));
-			this.plugin.normalizeRule(newRule); // Normalize the new default rule
-			this.plugin.settings.rules.push(newRule);
-			// Ensure ruleExpandedStates is updated for the new rule
-			if (this.ruleExpandedStates.length === 0) {
-				this.ruleExpandedStates.push(false);
-			}
-		}
-
-		// Render controls for each rule
-		this.plugin.settings.rules.forEach((rule, index) => {
-			this.renderRuleControls(rule, index, rulesContainer);
-		});
-
-		// --- Add New Rule Button ---
-		new Setting(containerEl)
-			.addButton(button => button
-				.setButtonText('Add new rule')
-				.setCta() // Call to action style
-				.setClass('virtual-footer-add-button')
-				.onClick(async () => {
-					const newRule = JSON.parse(JSON.stringify(DEFAULT_SETTINGS.rules[0]));
-					this.plugin.normalizeRule(newRule);
-					this.plugin.settings.rules.push(newRule);
-					this.ruleExpandedStates.push(true); // New rule is initially expanded
-					await this.plugin.saveSettings();
-					this.display(); // Re-render to show the new rule and update indices
-				}));
 	}
 
-	/**
-	 * Renders the UI controls for a single rule within the settings tab.
-	 * @param rule The rule object to render controls for.
-	 * @param index The index of the rule in the settings array.
-	 * @param containerEl The parent HTMLElement to append the rule controls to.
-	 */
-	private renderRuleControls(rule: Rule, index: number, containerEl: HTMLElement): void {
-		const ruleDiv = containerEl.createDiv('rule-item virtual-footer-rule-item');
-		
-		// Apply stored expansion state or default to collapsed
-		if (!this.ruleExpandedStates[index]) {
-			ruleDiv.addClass('is-collapsed');
+	private refreshSettingsUi(): void {
+		const updater = (this as unknown as { update?: () => void }).update;
+		if (typeof updater === 'function') {
+			updater.call(this);
+		} else {
+			this.display();
 		}
+	}
 
-		const ruleNameDisplay = (rule.name && rule.name.trim() !== '') ? rule.name : 'Unnamed Rule';
-		const ruleHeadingText = `Rule ${index + 1}: ${ruleNameDisplay}`;
-		const ruleHeading = ruleDiv.createEl('h4', { text: ruleHeadingText });
-		ruleHeading.addClass('virtual-footer-rule-heading');
+	private createRuleTemplate(): Rule {
+		const newRule = JSON.parse(JSON.stringify(DEFAULT_SETTINGS.rules[0]));
+		this.plugin.normalizeRule(newRule);
+		return newRule;
+	}
 
-
-		const ruleContentContainer = ruleDiv.createDiv('virtual-footer-rule-content');
-
-		// Toggle collapse/expand on heading click and update state
-		ruleHeading.addEventListener('click', () => {
-			const isNowExpanded = !ruleDiv.classList.toggle('is-collapsed');
-			this.ruleExpandedStates[index] = isNowExpanded;
+	private openNewRuleModal(): void {
+		const newRule = this.createRuleTemplate();
+		this.openRuleModal('Add rule', newRule, async (rule) => {
+			this.plugin.settings.rules.push(rule);
+			await this.plugin.saveSettings();
+			this.refreshSettingsUi();
 		});
+	}
 
-		// --- Rule Name Setting ---
-		new Setting(ruleContentContainer)
-			.setName('Rule name')
-			.setDesc('A descriptive name for this rule (e.g., "Project Notes Footer").')
-			.addText(text => text
-				.setPlaceholder('e.g., Blog Post Footer')
-				.setValue(rule.name || '')
-				.onChange((value) => {
-					rule.name = value;
-					// Update heading text dynamically
-					const newNameDisplay = (value && value.trim() !== '') ? value : 'Unnamed Rule';
-					ruleHeading.textContent = `Rule ${index + 1}: ${newNameDisplay}`;
-					this.debouncedSave();
-				}));
+	private openEditRuleModal(index: number): void {
+		const rule = this.plugin.settings.rules[index];
+		if (!rule) return;
+		this.openRuleModal('Edit rule', rule, async (updatedRule) => {
+			this.plugin.settings.rules[index] = updatedRule;
+			await this.plugin.saveSettings();
+			this.refreshSettingsUi();
+		});
+	}
 
-		// --- Enabled/Disabled Toggle ---
-		new Setting(ruleContentContainer)
-			.setName('Enabled')
-			.setDesc('If disabled, this rule will not be applied.')
-			.addToggle((toggle: any) => toggle
-				.setValue(rule.enabled!) // normalizeRule ensures 'enabled' is boolean
-				.onChange(async (value: boolean) => {
-					rule.enabled = value;
-					await this.plugin.saveSettings();
-				}));
+	private openRuleModal(title: string, rule: Rule, onSave: (rule: Rule) => Promise<void>): void {
+		const modal = new RuleEditorModal(this.app, this.plugin, rule, {
+			title,
+			onSave,
+			providers: {
+				getAvailableFolderPaths: () => this.getAvailableFolderPaths(),
+				getAvailableTags: () => this.getAvailableTags(),
+				getAvailableMarkdownFilePaths: () => this.getAvailableMarkdownFilePaths(),
+				getAvailablePropertyNames: () => this.getAvailablePropertyNames(),
+			},
+		});
+		modal.open();
+	}
 
-		// --- Rule Type Setting ---
-		new Setting(ruleContentContainer)
-			.setName('Rule type')
-			.setDesc('Apply this rule based on folder, tag, property, or a combination.')
-			.addDropdown(dropdown => dropdown
-				.addOption(RuleType.Folder, 'Folder')
-				.addOption(RuleType.Tag, 'Tag')
-				.addOption(RuleType.Property, 'Property')
-				.addOption(RuleType.Multi, 'Multi-condition')
-				.addOption(RuleType.Dataview, 'Dataview')
-				.setValue(rule.type)
-				.onChange(async (value: string) => {
-					rule.type = value as RuleType;
-					// When switching to Multi, we might want to convert the old rule
-					if (rule.type === RuleType.Multi) {
-						const oldRule = { ...rule };
-						rule.conditions = [];
-						// This logic is complex, so for now we just start with a clean slate.
-						// A more advanced version could auto-convert the previous simple rule.
-					}
-					this.plugin.normalizeRule(rule); // Re-normalize for type-specific fields
-					await this.plugin.saveSettings();
-					this.display(); // Re-render to show/hide type-specific settings
-				}));
-
-		// --- Type-Specific Settings ---
-		if (rule.type === RuleType.Folder) {
-			new Setting(ruleContentContainer)
-				.setName('Condition')
-				.setDesc('Choose whether this condition should be met or not met.')
-				.addDropdown(dropdown => dropdown
-					.addOption('is', 'is')
-					.addOption('not', 'not')
-					.setValue(rule.negated ? 'not' : 'is')
-					.onChange(async (value: string) => {
-						rule.negated = value === 'not';
-						await this.plugin.saveSettings();
-					})
-				);
-
-			new Setting(ruleContentContainer)
-				.setName('Folder path')
-				.setDesc('Path for the rule. Leave empty for all files, "/" for root folder, or "FolderName/" for specific folders (ensure trailing slash for non-root folders).')
-				.addText(text => {
-					text.setPlaceholder('e.g., Meetings/, /, or empty for all')
-						.setValue(rule.path || '')
-						.onChange((value) => {
-							rule.path = value;
-							this.plugin.normalizeRule(rule); // Normalize path and recursive flag
-							this.debouncedSaveAndRefresh();
-						});
-					// Attach suggestion provider for folder paths
-					new MultiSuggest(text.inputEl, this.getAvailableFolderPaths(), (selectedPath) => {
-						rule.path = selectedPath;
-						this.plugin.normalizeRule(rule);
-						text.setValue(selectedPath); // Update text field with selection
-						this.plugin.saveSettings().then(() => this.display());
-					}, this.plugin.app);
-				});
-
-			new Setting(ruleContentContainer)
-				.setName('Include subfolders (recursive)')
-				.setDesc('If enabled, rule applies to files in subfolders. For "all files" (empty path), this is always true. For root path ("/"), enabling applies to all vault files, disabling applies only to files directly in the root.')
-				.addToggle(toggle => {
-					toggle.setValue(rule.recursive!) // normalizeRule ensures 'recursive' is boolean
-						.onChange(async (value) => {
-							rule.recursive = value;
-							await this.plugin.saveSettings();
-						});
-					// Disable toggle if path is "" (all files), as recursive is always true
-					if (rule.path === "") {
-						toggle.setDisabled(true);
-					}
-				});
-
-		} else if (rule.type === RuleType.Tag) {
-			new Setting(ruleContentContainer)
-				.setName('Condition')
-				.setDesc('Choose whether this condition should be met or not met.')
-				.addDropdown(dropdown => dropdown
-					.addOption('is', 'is')
-					.addOption('not', 'not')
-					.setValue(rule.negated ? 'not' : 'is')
-					.onChange(async (value: string) => {
-						rule.negated = value === 'not';
-						await this.plugin.saveSettings();
-					})
-				);
-
-			new Setting(ruleContentContainer)
-				.setName('Tag value')
-				.setDesc('Tag to match (without the # prefix). E.g., "project" or "status/done".')
-				.addText(text => {
-					text.setPlaceholder('e.g., important or project/alpha')
-						.setValue(rule.tag || '')
-						.onChange((value) => {
-							// Ensure tag doesn't start with '#'
-							rule.tag = value.startsWith('#') ? value.substring(1) : value;
-							this.debouncedSave();
-						});
-					new MultiSuggest(text.inputEl, this.getAvailableTags(), (selectedTag) => {
-						const normalizedTag = selectedTag.startsWith('#') ? selectedTag.substring(1) : selectedTag;
-						rule.tag = normalizedTag;
-						text.setValue(normalizedTag);
-						this.plugin.saveSettings();
-					}, this.plugin.app);
-				});
-
-			new Setting(ruleContentContainer)
-				.setName('Include subtags')
-				.setDesc("If enabled, a rule for 'tag' will also apply to 'tag/subtag1', 'tag/subtag2/subtag3', etc. If disabled, it only applies to the exact tag.")
-				.addToggle(toggle => {
-					toggle.setValue(rule.includeSubtags!) // normalizeRule ensures 'includeSubtags' is boolean
-						.onChange(async (value) => {
-							rule.includeSubtags = value;
-							await this.plugin.saveSettings();
-						});
-				});
-		} else if (rule.type === RuleType.Property) {
-			new Setting(ruleContentContainer)
-				.setName('Condition')
-				.setDesc('Choose whether this condition should be met or not met.')
-				.addDropdown(dropdown => dropdown
-					.addOption('is', 'is')
-					.addOption('not', 'not')
-					.setValue(rule.negated ? 'not' : 'is')
-					.onChange(async (value: string) => {
-						rule.negated = value === 'not';
-						await this.plugin.saveSettings();
-					})
-				);
-
-			new Setting(ruleContentContainer)
-				.setName('Property name')
-				.setDesc('The name of the Obsidian property (frontmatter key) to match.')
-				.addText(text => {
-					text.setPlaceholder('e.g., status, type, author')
-						.setValue(rule.propertyName || '')
-						.onChange((value) => {
-							rule.propertyName = value;
-							this.debouncedSave();
-						});
-					new MultiSuggest(text.inputEl, this.getAvailablePropertyNames(), (selectedName) => {
-						rule.propertyName = selectedName;
-						text.setValue(selectedName);
-						this.plugin.saveSettings();
-					}, this.plugin.app);
-				});
-
-			new Setting(ruleContentContainer)
-				.setName('Property value')
-				.setDesc('The value the property should have. Leave empty to match any file that has this property (regardless of value). For list/array properties, matches if this value is one of the items.')
-				.addText(text => text
-					.setPlaceholder('e.g., complete, article, John Doe (or leave empty)')
-					.setValue(rule.propertyValue || '')
-					.onChange((value) => {
-						rule.propertyValue = value;
-						this.debouncedSave();
-					}));
-		} else if (rule.type === RuleType.Multi) {
-			this.renderMultiConditionControls(rule, ruleContentContainer);
-		} else if (rule.type === RuleType.Dataview) {
-			new Setting(ruleContentContainer)
-				.setName('Condition')
-				.setDesc('Choose whether this condition should be met or not met.')
-				.addDropdown(dropdown => dropdown
-					.addOption('is', 'is')
-					.addOption('not', 'not')
-					.setValue(rule.negated ? 'not' : 'is')
-					.onChange(async (value: string) => {
-						rule.negated = value === 'not';
-						await this.plugin.saveSettings();
-					})
-				);
-
-			new Setting(ruleContentContainer)
-				.setName('Dataview query')
-				.setDesc('Enter a Dataview LIST query to match notes where this rule should apply.')
-				.addTextArea(text => text
-					.setPlaceholder('LIST FROM "References/Authors" WHERE startswith(file.name, "Test") OR startswith(file.name, "Example")')
-					.setValue(rule.dataviewQuery || '')
-					.onChange((value) => {
-						rule.dataviewQuery = value;
-						this.debouncedSave();
-					}));
-
-			const infoDiv = ruleContentContainer.createDiv('dataview-info');
-			infoDiv.createEl('p', { 
-				text: 'Note: The Dataview plugin must be installed for this rule type to work.',
-				cls: 'setting-item-description'
-			});
+	private duplicateRule(index: number): void {
+		const rule = this.plugin.settings.rules[index];
+		if (!rule) return;
+		const duplicate = JSON.parse(JSON.stringify(rule)) as Rule;
+		if (duplicate.name) {
+			duplicate.name = `${duplicate.name} copy`;
 		}
+		this.plugin.normalizeRule(duplicate);
+		this.plugin.settings.rules.splice(index + 1, 0, duplicate);
+		void this.plugin.saveSettings().then(() => this.refreshSettingsUi());
+	}
 
-		// --- Content Source Settings ---
-		new Setting(ruleContentContainer)
-			.setName('Content source')
-			.setDesc('Where to get the content from: direct text input or a separate Markdown file.')
-			.addDropdown(dropdown => dropdown
-				.addOption(ContentSource.Text, 'Direct text')
-				.addOption(ContentSource.File, 'Markdown file')
-				.setValue(rule.contentSource || ContentSource.Text) // Default to Text if undefined
-				.onChange(async (value: string) => {
-					rule.contentSource = value as ContentSource;
-					this.plugin.normalizeRule(rule); // Normalize for content source specific fields
-					await this.plugin.saveSettings();
-					this.display(); // Re-render to show/hide content source specific fields
-				}));
+	private async moveRule(fromIndex: number, toIndex: number): Promise<void> {
+		const rules = this.plugin.settings.rules;
+		if (toIndex < 0 || toIndex >= rules.length) return;
+		const [moved] = rules.splice(fromIndex, 1);
+		rules.splice(toIndex, 0, moved);
+		await this.plugin.saveSettings();
+		this.display();
+	}
 
+	private async deleteRule(index: number): Promise<void> {
+		this.plugin.settings.rules.splice(index, 1);
+		await this.plugin.saveSettings();
+		this.display();
+	}
+
+	private getRuleDisplayName(rule: Rule, index: number): string {
+		const name = rule.name?.trim();
+		return name ? name : `Rule ${index + 1}`;
+	}
+
+	private getRuleSummary(rule: Rule): string {
+		const parts: string[] = [];
+		if (rule.enabled === false) parts.push('Disabled');
+		parts.push(this.getRuleTypeSummary(rule));
+		parts.push(this.getRuleContentSummary(rule));
+		parts.push(this.getRuleLocationSummary(rule));
+		return parts.filter(Boolean).join(' | ');
+	}
+
+	private getRuleTypeSummary(rule: Rule): string {
+		switch (rule.type) {
+			case RuleType.Folder: {
+				const path = rule.path?.trim() || 'all files';
+				const condition = rule.negated ? 'not in' : 'in';
+				const recursive = rule.path === '' ? '' : (rule.recursive ? ' (recursive)' : '');
+				return `Folder ${condition} ${path}${recursive}`;
+			}
+			case RuleType.Tag: {
+				const tag = rule.tag?.trim() || 'tag';
+				const condition = rule.negated ? 'not tagged' : 'tagged';
+				const subtags = rule.includeSubtags ? ' (include subtags)' : '';
+				return `Tag ${condition} #${tag}${subtags}`;
+			}
+			case RuleType.Property: {
+				const name = rule.propertyName?.trim() || 'property';
+				const condition = rule.negated ? 'not' : 'has';
+				const value = rule.propertyValue?.trim() ? ` = ${rule.propertyValue.trim()}` : '';
+				return `Property ${condition} ${name}${value}`;
+			}
+			case RuleType.Multi: {
+				const logic = rule.multiConditionLogic === 'all' ? 'all' : 'any';
+				const count = rule.conditions?.length ?? 0;
+				return `Multi (${logic}, ${count} condition${count === 1 ? '' : 's'})`;
+			}
+			case RuleType.Dataview: {
+				return 'Dataview query';
+			}
+			default:
+				return 'Rule';
+		}
+	}
+
+	private getRuleContentSummary(rule: Rule): string {
 		if (rule.contentSource === ContentSource.File) {
-			new Setting(ruleContentContainer)
-				.setName('Content file path')
-				.setDesc('Path to the .md file to use as content (e.g., "templates/common-footer.md").')
-				.addText(text => {
-					text.setPlaceholder('e.g., templates/common-footer.md')
-						.setValue(rule.footerFilePath || '') // Retained name for compatibility
-						.onChange((value) => {
-							rule.footerFilePath = value;
-							this.debouncedSave();
-						});
-					new MultiSuggest(text.inputEl, this.getAvailableMarkdownFilePaths(), (selectedPath) => {
-						rule.footerFilePath = selectedPath;
-						text.setValue(selectedPath);
-						this.plugin.saveSettings();
-					}, this.plugin.app);
-				});
-		} else { // ContentSource.Text
-			new Setting(ruleContentContainer)
-				.setName('Content text')
-				.setDesc('Markdown text to display. This will be rendered.')
-				.addTextArea(text => text
-					.setPlaceholder('Enter your markdown content here...\nSupports multiple lines and **Markdown** formatting.')
-					.setValue(rule.footerText || '') // Retained name for compatibility
-					.onChange((value) => {
-						rule.footerText = value;
-						this.debouncedSave();
-					}));
+			return rule.footerFilePath?.trim() ? `File: ${rule.footerFilePath.trim()}` : 'File content';
 		}
-
-		// --- Render Location Setting ---
-		new Setting(ruleContentContainer)
-			.setName('Render location')
-			.setDesc('Choose whether this rule renders its content in the note header, footer, a selected section, or a dedicated sidebar tab.')
-			.addDropdown(dropdown => dropdown
-				.addOption(RenderLocation.Footer, 'Footer')
-				.addOption(RenderLocation.Header, 'Header')
-				.addOption(RenderLocation.SectionHeader, 'Section header')
-				.addOption(RenderLocation.Sidebar, 'Sidebar')
-				.setValue(rule.renderLocation || RenderLocation.Footer) // Default to Footer
-				.onChange(async (value: string) => {
-					rule.renderLocation = value as RenderLocation;
-					this.plugin.normalizeRule(rule);
-					await this.plugin.saveSettings();
-					this.display();
-				}));
-
-		// --- Sidebar-Specific Settings ---
-		if (rule.renderLocation === RenderLocation.Sidebar) {
-			new Setting(ruleContentContainer)
-				.setName('Show in separate tab')
-				.setDesc('If enabled, this content will appear in its own sidebar tab instead of being combined with other sidebar rules.')
-				.addToggle(toggle => toggle
-					.setValue(rule.showInSeparateTab!)
-					.onChange(async (value) => {
-						rule.showInSeparateTab = value;
-						await this.plugin.saveSettings();
-						this.display(); // Re-render to show/hide tab name setting
-					}));
-
-			if (rule.showInSeparateTab) {
-				new Setting(ruleContentContainer)
-					.setName('Sidebar tab name')
-					.setDesc('The name for the separate sidebar tab. If empty, a default name will be used.')
-					.addText(text => text
-						.setPlaceholder('e.g., Related Notes')
-						.setValue(rule.sidebarTabName || '')
-						.onChange((value) => {
-							rule.sidebarTabName = value;
-							this.debouncedSave();
-						}));
-			}
-		}
-
-		// --- Header-Specific Settings ---
-		if (rule.renderLocation === RenderLocation.Header) {
-			new Setting(ruleContentContainer)
-				.setName('Render above properties')
-				.setDesc('If enabled, header content will be rendered above the frontmatter properties section.')
-				.addToggle(toggle => toggle
-					.setValue(rule.renderAboveProperties || false)
-					.onChange(async (value) => {
-						rule.renderAboveProperties = value;
-						await this.plugin.saveSettings();
-					}));
-		}
-
-		// --- Section Header-Specific Settings ---
-		if (rule.renderLocation === RenderLocation.SectionHeader) {
-			new Setting(ruleContentContainer)
-				.setName('Header text')
-				.setDesc('The exact heading text to target, without leading # characters.')
-				.addText(text => text
-					.setPlaceholder('e.g., Tasks')
-					.setValue(rule.sectionHeaderText || '')
-					.onChange((value) => {
-						rule.sectionHeaderText = value;
-						this.debouncedSave();
-					}));
-
-			new Setting(ruleContentContainer)
-				.setName('Header type')
-				.setDesc('Choose which heading level should be matched.')
-				.addDropdown(dropdown => dropdown
-					.addOption('h1', 'H1')
-					.addOption('h2', 'H2')
-					.addOption('h3', 'H3')
-					.addOption('h4', 'H4')
-					.addOption('h5', 'H5')
-					.addOption('h6', 'H6')
-					.setValue(rule.sectionHeaderLevel || 'h2')
-					.onChange(async (value: string) => {
-						rule.sectionHeaderLevel = value;
-						await this.plugin.saveSettings();
-					}));
-
-			new Setting(ruleContentContainer)
-				.setName('Section placement')
-				.setDesc('Choose whether virtual content appears immediately after the heading or at the end of that heading section.')
-				.addDropdown(dropdown => dropdown
-					.addOption('top', 'Top of section')
-					.addOption('bottom', 'Bottom of section')
-					.setValue(rule.sectionHeaderPlacement || 'top')
-					.onChange(async (value: string) => {
-						rule.sectionHeaderPlacement = value as SectionHeaderPlacement;
-						await this.plugin.saveSettings();
-					}));
-		}
-
-		// --- Footer-Specific Settings ---
-		if (rule.renderLocation === RenderLocation.Footer) {
-			new Setting(ruleContentContainer)
-				.setName('Render above backlinks')
-				.setDesc('If enabled, footer content will be rendered above the embedded backlinks section. It is recommended to only enable this if you have backlinks enabled in the note, otherwise the note height may be affected.')
-				.addToggle(toggle => toggle
-					.setValue(rule.renderAboveBacklinks || false)
-					.onChange(async (value) => {
-						rule.renderAboveBacklinks = value;
-						await this.plugin.saveSettings();
-					}));
-		}
-		
-		// --- Popover Visibility Setting ---
-		new Setting(ruleContentContainer)
-			.setName('Show in popover views')
-			.setDesc('If enabled, this rule\'s content will be shown when viewing notes in hover popovers.')
-			.addToggle(toggle => toggle
-				.setValue(rule.showInPopover !== undefined ? rule.showInPopover : true)
-				.onChange(async (value) => {
-					rule.showInPopover = value;
-					await this.plugin.saveSettings();
-				}));
-
-		// --- Embed Visibility Setting ---
-		new Setting(ruleContentContainer)
-			.setName('Show in embedded notes')
-			.setDesc('If enabled, this rule\'s content will be shown inside embedded notes such as ![[Link]]. The global setting "Embed rendering" must also be enabled for this to work.')
-			.addToggle(toggle => toggle
-				.setValue(rule.showInEmbed !== undefined ? rule.showInEmbed : true)
-				.onChange(async (value) => {
-					rule.showInEmbed = value;
-					await this.plugin.saveSettings();
-				}));
-
-		// --- Canvas Visibility Setting ---
-		new Setting(ruleContentContainer)
-			.setName('Show in canvas cards')
-			.setDesc('If enabled, this rule\'s content will be shown inside note cards on Canvas. The global setting "Canvas rendering" must also be enabled for this to work. Scanning canvas nodes can be expensive on large canvases.')
-			.addToggle(toggle => toggle
-				.setValue(rule.showInCanvas !== undefined ? rule.showInCanvas : true)
-				.onChange(async (value) => {
-					rule.showInCanvas = value;
-					await this.plugin.saveSettings();
-				}));
-		
-		// --- Rule Actions: Reorder and Delete ---
-		const ruleActionsSetting = new Setting(ruleContentContainer)
-			.setClass('virtual-footer-rule-actions');
-
-		// Move Up Button
-		ruleActionsSetting.addButton(button => button
-			.setIcon('arrow-up')
-			.setTooltip('Move rule up')
-			.setClass('virtual-footer-move-button')
-			.setDisabled(index === 0)
-			.onClick(async () => {
-				if (index > 0) {
-					const rules = this.plugin.settings.rules;
-					const ruleToMove = rules.splice(index, 1)[0];
-					rules.splice(index - 1, 0, ruleToMove);
-
-					const expandedStateToMove = this.ruleExpandedStates.splice(index, 1)[0];
-					this.ruleExpandedStates.splice(index - 1, 0, expandedStateToMove);
-					
-					await this.plugin.saveSettings();
-					this.display();
-				}
-			}));
-
-		// Move Down Button
-		ruleActionsSetting.addButton(button => button
-			.setIcon('arrow-down')
-			.setTooltip('Move rule down')
-			.setClass('virtual-footer-move-button')
-			.setDisabled(index === this.plugin.settings.rules.length - 1)
-			.onClick(async () => {
-				if (index < this.plugin.settings.rules.length - 1) {
-					const rules = this.plugin.settings.rules;
-					const ruleToMove = rules.splice(index, 1)[0];
-					rules.splice(index + 1, 0, ruleToMove);
-
-					const expandedStateToMove = this.ruleExpandedStates.splice(index, 1)[0];
-					this.ruleExpandedStates.splice(index + 1, 0, expandedStateToMove);
-
-					await this.plugin.saveSettings();
-					this.display();
-				}
-			}));
-		
-		// Spacer to push delete button to the right
-		ruleActionsSetting.controlEl.createDiv({ cls: 'virtual-footer-actions-spacer' });
-
-
-		// Delete Rule Button
-		ruleActionsSetting.addButton(button => button
-			.setButtonText('Delete rule')
-			.setWarning() // Style as a warning/destructive action
-			.setClass('virtual-footer-delete-button')
-			.onClick(async () => {
-				// Confirmation could be added here if desired
-				this.plugin.settings.rules.splice(index, 1); // Remove rule from array
-				this.ruleExpandedStates.splice(index, 1); // Remove corresponding state
-				await this.plugin.saveSettings();
-				this.display(); // Re-render to reflect deletion and update indices
-			}));
+		return 'Text content';
 	}
 
-	private renderMultiConditionControls(rule: Rule, containerEl: HTMLElement): void {
-		new Setting(containerEl)
-			.setName('Condition logic')
-			.setDesc('Choose whether any condition or all conditions must be met.')
-			.addDropdown(dropdown => dropdown
-				.addOption('any', 'Any condition')
-				.addOption('all', 'All conditions')
-				.setValue(rule.multiConditionLogic || 'any')
-				.onChange(async (value) => {
-					rule.multiConditionLogic = value as 'any' | 'all';
-					await this.plugin.saveSettings();
-				}));
-
-		const conditionsSetting = new Setting(containerEl)
-			.setName('Conditions')
-			.setDesc('This rule will apply if the selected logic is met by the following conditions.');
-
-		// Add the hint as a separate paragraph below the description
-		const descEl = conditionsSetting.settingEl.querySelector('.setting-item-description');
-		if (descEl) {
-			const hintEl = document.createElement('p');
-			hintEl.className = 'setting-item-description';
-			hintEl.innerText = 'Hint: For very complex rules, consider using the Dataview rule type instead.';
-			descEl.insertAdjacentElement('afterend', hintEl);
+	private getRuleLocationSummary(rule: Rule): string {
+		switch (rule.renderLocation) {
+			case RenderLocation.Header:
+				return 'Header';
+			case RenderLocation.Footer:
+				return 'Footer';
+			case RenderLocation.Sidebar:
+				return rule.showInSeparateTab ? 'Sidebar (separate tab)' : 'Sidebar';
+			case RenderLocation.SectionHeader:
+				return 'Section header';
+			default:
+				return 'Location';
 		}
-
-		const conditionsContainer = containerEl.createDiv('virtual-footer-conditions-container');
-		rule.conditions?.forEach((condition, index) => {
-			this.renderSubConditionControls(condition, index, rule, conditionsContainer);
-		});
-
-		new Setting(containerEl)
-			.addButton(button => button
-				.setButtonText('Add condition')
-				.setCta()
-				.onClick(async () => {
-					rule.conditions = rule.conditions || [];
-					rule.conditions.push({ type: 'folder', path: '', recursive: true, negated: false });
-					await this.plugin.saveSettings();
-					this.display();
-				}));
-	}
-
-	private renderSubConditionControls(condition: SubCondition, index: number, rule: Rule, containerEl: HTMLElement): void {
-		const conditionDiv = containerEl.createDiv('virtual-footer-sub-condition-item');
-
-		const setting = new Setting(conditionDiv)
-			.addDropdown(dropdown => dropdown
-				.addOption('is', 'is')
-				.addOption('not', 'not')
-				.setValue(condition.negated ? 'not' : 'is')
-				.onChange(async (value: string) => {
-					condition.negated = value === 'not';
-					await this.plugin.saveSettings();
-				})
-			)
-			.addDropdown(dropdown => dropdown
-				.addOption('folder', 'Folder')
-				.addOption('tag', 'Tag')
-				.addOption('property', 'Property')
-				.setValue(condition.type)
-				.onChange(async (value: string) => {
-					condition.type = value as 'folder' | 'tag' | 'property';
-					// Reset fields when type changes
-					delete condition.path;
-					delete condition.recursive;
-					delete condition.tag;
-					delete condition.includeSubtags;
-					delete condition.propertyName;
-					delete condition.propertyValue;
-					await this.plugin.saveSettings();
-					this.display();
-				})
-			);
-
-		if (condition.type === 'folder') {
-			setting.addText(text => {
-				text.setPlaceholder('Folder path')
-					.setValue(condition.path || '')
-					.onChange((value) => {
-						condition.path = value;
-						this.debouncedSave();
-					});
-				new MultiSuggest(text.inputEl, this.getAvailableFolderPaths(), (selected) => {
-					condition.path = selected;
-					text.setValue(selected);
-					this.plugin.saveSettings();
-				}, this.plugin.app);
-			});
-			setting.addToggle(toggle => toggle
-				.setTooltip('Include subfolders')
-				.setValue(condition.recursive ?? true)
-				.onChange(async (value) => {
-					condition.recursive = value;
-					await this.plugin.saveSettings();
-				})
-			);
-		} else if (condition.type === 'tag') {
-			setting.addText(text => {
-				text.setPlaceholder('Tag value (no #)')
-					.setValue(condition.tag || '')
-					.onChange((value) => {
-						condition.tag = value.startsWith('#') ? value.substring(1) : value;
-						this.debouncedSave();
-					});
-				new MultiSuggest(text.inputEl, this.getAvailableTags(), (selected) => {
-					const normalized = selected.startsWith('#') ? selected.substring(1) : selected;
-					condition.tag = normalized;
-					text.setValue(normalized);
-					this.plugin.saveSettings();
-				}, this.plugin.app);
-			});
-			setting.addToggle(toggle => toggle
-				.setTooltip('Include subtags')
-				.setValue(condition.includeSubtags ?? false)
-				.onChange(async (value) => {
-					condition.includeSubtags = value;
-					await this.plugin.saveSettings();
-				})
-			);
-		} else if (condition.type === 'property') {
-			setting.addText(text => {
-				text.setPlaceholder('Property name')
-					.setValue(condition.propertyName || '')
-					.onChange((value) => {
-						condition.propertyName = value;
-						this.debouncedSave();
-					});
-				new MultiSuggest(text.inputEl, this.getAvailablePropertyNames(), (selected) => {
-					condition.propertyName = selected;
-					text.setValue(selected);
-					this.plugin.saveSettings();
-				}, this.plugin.app);
-			});
-			setting.addText(text => text
-				.setPlaceholder('Property value (or leave empty)')
-				.setValue(condition.propertyValue || '')
-				.onChange((value) => {
-					condition.propertyValue = value;
-					this.debouncedSave();
-				})
-			);
-		}
-
-		setting.addButton(button => button
-			.setIcon('trash')
-			.setTooltip('Delete condition')
-			.setWarning()
-			.onClick(async () => {
-				rule.conditions?.splice(index, 1);
-				await this.plugin.saveSettings();
-				this.display();
-			})
-		);
 	}
 }
