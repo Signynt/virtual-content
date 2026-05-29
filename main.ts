@@ -386,6 +386,58 @@ export default class VirtualFooterPlugin extends Plugin {
 	private canvasRefreshInProgress = false;
 	private canvasInteractionHandler: ((event: Event) => void) | null = null;
 
+	private getActiveFileForVirtualContent(): TFile | null {
+		const activeLeaf = this.app.workspace.activeLeaf;
+		const activeView = activeLeaf?.view as { file?: unknown } | undefined;
+		if (activeView?.file instanceof TFile) {
+			return activeView.file;
+		}
+
+		const workspaceFile = this.app.workspace.getActiveFile();
+		return workspaceFile instanceof TFile ? workspaceFile : null;
+	}
+
+	private async processSidebarContentForFilePath(filePath: string): Promise<void> {
+		const applicableRulesWithContent = await this._getApplicableRulesAndContent(filePath);
+		const contentSeparator = "\n\n";
+		let combinedSidebarText = "";
+		this.lastSeparateTabContents.clear();
+
+		for (const { rule, contentText, index } of applicableRulesWithContent) {
+			if (!contentText || contentText.trim() === "" || rule.renderLocation !== RenderLocation.Sidebar) {
+				continue;
+			}
+
+			if (rule.showInSeparateTab) {
+				const viewId = this.getSeparateViewId(index);
+				const existingContent = this.lastSeparateTabContents.get(viewId)?.content || "";
+				this.lastSeparateTabContents.set(viewId, {
+					content: (existingContent ? existingContent + contentSeparator : "") + contentText,
+					sourcePath: filePath
+				});
+			} else {
+				combinedSidebarText += (combinedSidebarText ? contentSeparator : "") + contentText;
+			}
+		}
+
+		this.lastSidebarContent = { content: combinedSidebarText, sourcePath: filePath };
+		this.updateAllSidebarViews();
+	}
+
+	private async processNonMarkdownActiveFile(): Promise<void> {
+		const activeFile = this.getActiveFileForVirtualContent();
+		if (!activeFile) {
+			if (!this.settings.refreshOnFileOpen || this.app.workspace.getLeavesOfType('markdown').length === 0) {
+				this.lastSidebarContent = null;
+				this.lastSeparateTabContents.clear();
+				this.updateAllSidebarViews();
+			}
+			return;
+		}
+
+		await this.processSidebarContentForFilePath(activeFile.path);
+	}
+
 	private logEmbedCanvasDebug(message: string, data?: Record<string, unknown>): void {
 		if (!this.settings.debugEmbedCanvas) {
 			return;
@@ -674,7 +726,11 @@ export default class VirtualFooterPlugin extends Plugin {
 	 */
 	private handleActiveViewChange = () => {
 		const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
-		this._processView(activeView);
+		if (activeView?.file) {
+			void this._processView(activeView);
+			return;
+		}
+		void this.processNonMarkdownActiveFile();
 	}
 
 	/**
