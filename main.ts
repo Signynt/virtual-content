@@ -388,6 +388,7 @@ export default class VirtualFooterPlugin extends Plugin {
 	private embedRefreshTimeouts: WeakMap<MarkdownView, number> = new WeakMap();
 	private embedLastScanByView: WeakMap<MarkdownView, { filePath: string; time: number }> = new WeakMap();
 	private footerPaddingObservers: WeakMap<MarkdownView, ResizeObserver> = new WeakMap();
+	private livePreviewFooterStyleApplied: WeakMap<MarkdownView, boolean> = new WeakMap();
 	private canvasRefreshTimeout: number | null = null;
 	private canvasRefreshInProgress = false;
 	private canvasInteractionHandler: ((event: Event) => void) | null = null;
@@ -2385,6 +2386,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		const containerEl = view.containerEl.querySelector<HTMLDivElement>(SELECTOR_EDITOR_CONTENT_CONTAINER_PARENT);
 		contentEl?.classList.add(CSS_VIRTUAL_FOOTER_CM_PADDING);
 		containerEl?.classList.add(CSS_VIRTUAL_FOOTER_REMOVE_FLEX);
+		this.livePreviewFooterStyleApplied.set(view, true);
 
 		// Keep Live Preview bottom spacing stable even when Obsidian rewrites inline styles.
 		if (contentEl) {
@@ -2421,17 +2423,29 @@ export default class VirtualFooterPlugin extends Plugin {
 		const container = viewOrContainer instanceof MarkdownView ? viewOrContainer.containerEl : viewOrContainer;
 		const contentEl = container.querySelector<HTMLDivElement>(SELECTOR_EDITOR_CONTENT_AREA);
 		const containerEl = container.querySelector<HTMLDivElement>(SELECTOR_EDITOR_CONTENT_CONTAINER_PARENT);
+		const view = viewOrContainer instanceof MarkdownView ? viewOrContainer : null;
+		if (view && !this.livePreviewFooterStyleApplied.get(view)) {
+			return;
+		}
 		contentEl?.classList.remove(CSS_VIRTUAL_FOOTER_CM_PADDING);
 		containerEl?.classList.remove(CSS_VIRTUAL_FOOTER_REMOVE_FLEX);
 
-		// Remove the inline padding-bottom style
+		// Restore native-like bottom spacing instead of clearing it entirely.
 		if (contentEl) {
 			const observedContentEl = contentEl as HTMLDivElement & { observer?: MutationObserver };
-			contentEl.style.removeProperty('padding-bottom');
+			const containerHeight = container.clientHeight;
+			if (containerHeight > 0) {
+				contentEl.style.setProperty('padding-bottom', `${this.computeFooterBottomPaddingPx(containerHeight)}px`);
+			} else {
+				contentEl.style.removeProperty('padding-bottom');
+			}
 			if (observedContentEl.observer) {
 				observedContentEl.observer.disconnect();
 				delete observedContentEl.observer;
 			}
+		}
+		if (view) {
+			this.livePreviewFooterStyleApplied.delete(view);
 		}
 	}
 
