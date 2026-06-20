@@ -2722,7 +2722,7 @@ export default class VirtualFooterPlugin extends Plugin {
 			}
 			
 			// Execute the query against the active file
-			const results = await dataviewApi.query(query);
+			const results = await dataviewApi.query(query, file.path);
 
 			// Dataview API returns a Success object with a 'successful' flag and 'value' property
 			if (!results || !results.successful || !results.value || !Array.isArray(results.value.values)) {
