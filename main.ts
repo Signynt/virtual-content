@@ -877,7 +877,7 @@ export default class VirtualFooterPlugin extends Plugin {
 			}
 		}
 
-		const embedContainer = embed.closest('.markdown-embed') as HTMLElement | null;
+		const embedContainer = embed.closest<HTMLElement>('.markdown-embed');
 		const scopedContainer = embedContainer || embed;
 		const embedLink = scopedContainer.querySelector<HTMLAnchorElement>('.markdown-embed-link a.internal-link[data-href]');
 		const embedLinkHref = embedLink?.dataset?.href;
