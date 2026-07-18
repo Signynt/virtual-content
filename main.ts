@@ -400,8 +400,7 @@ export default class VirtualFooterPlugin extends Plugin {
 	private canvasInteractionHandler: ((event: Event) => void) | null = null;
 
 	private getActiveFileForVirtualContent(): TFile | null {
-		const activeLeaf = this.app.workspace.activeLeaf;
-		const activeView = activeLeaf?.view as { file?: unknown } | undefined;
+		const activeView = this.app.workspace.getActiveViewOfType(MarkdownView) as { file?: unknown } | undefined;
 		if (activeView?.file instanceof TFile) {
 			return activeView.file;
 		}
@@ -460,9 +459,9 @@ export default class VirtualFooterPlugin extends Plugin {
 			return;
 		}
 		if (data) {
-			console.log(`VirtualContent: ${message}`, data);
+			console.debug(`VirtualContent: ${message}`, data);
 		} else {
-			console.log(`VirtualContent: ${message}`);
+			console.debug(`VirtualContent: ${message}`);
 		}
 	}
 
@@ -494,7 +493,7 @@ export default class VirtualFooterPlugin extends Plugin {
 
 		this.addCommand({
 			id: 'open-all-virtual-content-sidebar-tabs',
-			name: 'Open all virtual footer sidebar tabs',
+			name: 'Open all sidebar tabs',
 			callback: () => {
 				void this.activateAllSidebarViews();
 			},
@@ -567,7 +566,7 @@ export default class VirtualFooterPlugin extends Plugin {
 				window.setTimeout(() => {
 					const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
 					if (activeView) {
-						this.refreshSectionHeaderContent(activeView, true, sectionHeaderTarget);
+						void this.refreshSectionHeaderContent(activeView, true, sectionHeaderTarget);
 					}
 				}, 150);
 			}
@@ -600,7 +599,7 @@ export default class VirtualFooterPlugin extends Plugin {
 			if (popover) {
 				//console.log("VirtualContent: Click detected in popover, checking for mode change");
 				// Delay to allow any mode changes to complete
-				window.setTimeout(() => { this.processPopoverViews(); }, 150);
+				window.setTimeout(() => { void this.processPopoverViews(); }, 150);
 			}
 		});
 
@@ -614,13 +613,13 @@ export default class VirtualFooterPlugin extends Plugin {
 							if (node.classList.contains('popover') && node.classList.contains('hover-popover')) {
 								//console.log("VirtualContent: Popover created, processing views");
 								// Small delay to ensure the popover content is fully loaded
-								window.setTimeout(() => { this.processPopoverViews(); }, 50);
+								window.setTimeout(() => { void this.processPopoverViews(); }, 50);
 							}
 							// Also check for popovers added within other elements
 							const popovers = node.querySelectorAll('.popover.hover-popover');
 							if (popovers.length > 0) {
 								//console.log("VirtualContent: Popover(s) found in added content, processing views");
-								window.setTimeout(() => { this.processPopoverViews(); }, 50);
+								window.setTimeout(() => { void this.processPopoverViews(); }, 50);
 							}
 						}
 					});
@@ -704,11 +703,6 @@ export default class VirtualFooterPlugin extends Plugin {
 	onunload() {
 		this.popoverObserver?.disconnect();
 		this.canvasObserver?.disconnect();
-		for (const [index, rule] of this.settings.rules.entries()) {
-			if (rule.renderLocation === RenderLocation.Sidebar && rule.showInSeparateTab) {
-				this.app.workspace.detachLeavesOfType(this.getSeparateViewId(index));
-			}
-		}
 		this.clearAllViewsDynamicContent();
 
 		// Clean up any remaining DOM elements and components directly
@@ -1176,7 +1170,7 @@ export default class VirtualFooterPlugin extends Plugin {
 			const cleanPath = filePath.split('#')[0].split('^')[0];
 			//console.log("VirtualContent: Cleaned file path:", cleanPath);
 			// Process the popover content directly
-			this.injectContentIntoPopover(popover, cleanPath);
+			void this.injectContentIntoPopover(popover, cleanPath);
 		} else {
 			// console.log("VirtualContent: Could not determine file path for popover");
 			// // Log the DOM structure for debugging
@@ -1275,7 +1269,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		
 		// Create new content container
 		const activeDocument = this.getActiveDocument();
-		const groupDiv = activeDocument.createElement('div') as HTMLElementWithComponent;
+		const groupDiv = activeDocument.createEl('div') as HTMLElementWithComponent;
 		groupDiv.className = `${CSS_DYNAMIC_CONTENT_ELEMENT} ${cssClass}`;
 		groupDiv.dataset.sourcePath = filePath;
 		if (special) {
@@ -1459,7 +1453,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		component.load();
 
 		const activeDocument = this.getActiveDocument();
-		const groupDiv = activeDocument.createElement('div') as HTMLElementWithComponent;
+		const groupDiv = activeDocument.createEl('div') as HTMLElementWithComponent;
 		groupDiv.className = `${CSS_DYNAMIC_CONTENT_ELEMENT} ${CSS_SECTION_HEADER_GROUP_ELEMENT}`;
 		this.setSectionHeaderDataset(groupDiv, rule, ruleIndex);
 		groupDiv.dataset.sourcePath = filePath;
@@ -1553,8 +1547,6 @@ export default class VirtualFooterPlugin extends Plugin {
 		});
 
 		const viewState = view.getState();
-		let combinedHeaderText = "";
-		let combinedFooterText = "";
 		let combinedSidebarText = "";
 		let hasFooterRule = false;
 		const contentSeparator = "\n\n"; // Separator between content from multiple rules
@@ -1927,7 +1919,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		component.load();
 
 		const activeDocument = this.getActiveDocument();
-		const groupDiv = activeDocument.createElement('div') as HTMLElementWithComponent;
+		const groupDiv = activeDocument.createEl('div') as HTMLElementWithComponent;
 		groupDiv.className = `${CSS_DYNAMIC_CONTENT_ELEMENT} ${CSS_SECTION_HEADER_GROUP_ELEMENT}`;
 		this.setSectionHeaderDataset(groupDiv, rule, ruleIndex);
 		groupDiv.dataset.sourcePath = sourcePath;
@@ -1936,7 +1928,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		try {
 			await MarkdownRenderer.render(this.app, contentText, groupDiv, sourcePath, component);
 		} catch (error) {
-			console.log("VirtualFooter: Error rendering section header content:", error);
+			console.error("VirtualFooter: Error rendering section header content:", error);
 			component.unload();
 			return;
 		}
@@ -2005,7 +1997,7 @@ export default class VirtualFooterPlugin extends Plugin {
 
 		// Create container div for the content
 		const activeDocument = this.getActiveDocument();
-		const groupDiv = activeDocument.createElement('div') as HTMLElementWithComponent;
+		const groupDiv = activeDocument.createEl('div') as HTMLElementWithComponent;
 		groupDiv.className = CSS_DYNAMIC_CONTENT_ELEMENT; // Base class for all injected content
 		groupDiv.classList.add(
 			isRenderInHeader ? CSS_HEADER_GROUP_ELEMENT : CSS_FOOTER_GROUP_ELEMENT,
@@ -2032,7 +2024,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		try {
 			await MarkdownRenderer.render(this.app, combinedContentText, groupDiv, sourcePath, component);
 		} catch (error) {
-			console.log("VirtualFooter: Error during initial render, will retry after delay:", error);
+			console.error("VirtualFooter: Error during initial render, will retry after delay:", error);
 			
 			// Add a placeholder while waiting to retry
 			const placeholderEl = groupDiv.createEl("div", { cls: "virtual-footer-loading" });
@@ -2206,7 +2198,7 @@ export default class VirtualFooterPlugin extends Plugin {
 			// If injection failed in preview mode, it might be because the target DOM isn't ready.
 			// Return the div to be handled by the MutationObserver.
 			if (viewState.mode === 'preview') {
-				console.log(`VirtualFooter: Deferring injection for ${renderLocation} in preview mode. Target not found yet.`);
+				console.debug(`VirtualFooter: Deferring injection for ${renderLocation} in preview mode. Target not found yet.`);
 				return groupDiv; // Return for deferred injection
 			} else {
 				// For other modes, if injection fails, unload component and log warning.
@@ -2530,7 +2522,7 @@ export default class VirtualFooterPlugin extends Plugin {
 	private clearAllViewsDynamicContent(): void {
 		this.app.workspace.getLeavesOfType('markdown').forEach(leaf => {
 			if (leaf.view instanceof MarkdownView) {
-				this.removeDynamicContentFromView(leaf.view);
+				void this.removeDynamicContentFromView(leaf.view);
 			}
 		});
 		// Also clear sidebar
@@ -2661,7 +2653,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		return false;
 	}
 
-	private _checkPropertyMatch(frontmatter: any, rule: { propertyName?: string, propertyValue?: string }): boolean {
+	private _checkPropertyMatch(frontmatter: Record<string, unknown> | undefined, rule: { propertyName?: string, propertyValue?: string }): boolean {
 		if (!rule.propertyName || !frontmatter) return false;
 		const propertyKey = rule.propertyName;
 		const expectedPropertyValue = rule.propertyValue;
@@ -2692,7 +2684,7 @@ export default class VirtualFooterPlugin extends Plugin {
 
 				const expectedFile = resolveFile(expectedPropertyValue);
 				if (expectedFile) {
-					const checkValue = (val: any) => {
+					const checkValue = (val: unknown) => {
 						if (typeof val !== 'string') return false;
 						const actualFile = resolveFile(val);
 						return actualFile !== null && actualFile.path === expectedFile.path;
@@ -2811,7 +2803,7 @@ export default class VirtualFooterPlugin extends Plugin {
 				const href = linkElement.dataset.href;
 				if (href) {
 					const inNewPane = event.ctrlKey || event.metaKey; // Open in new pane if Ctrl/Cmd is pressed
-					this.app.workspace.openLinkText(href, sourcePath, inNewPane);
+					void this.app.workspace.openLinkText(href, sourcePath, inNewPane);
 				}
 				return;
 			}
@@ -2833,7 +2825,7 @@ export default class VirtualFooterPlugin extends Plugin {
 				event.preventDefault();
 				const href = linkElement.dataset.href;
 				if (href) {
-					this.app.workspace.openLinkText(href, sourcePath, true); // Always open in new pane for middle-click
+					void this.app.workspace.openLinkText(href, sourcePath, true); // Always open in new pane for middle-click
 				}
 				return;
 			}
@@ -2860,7 +2852,7 @@ export default class VirtualFooterPlugin extends Plugin {
 			const oldGlobalRenderLocation = loadedData.renderLocation as RenderLocation | undefined;
 
 			if (loadedData.rules && Array.isArray(loadedData.rules)) {
-				this.settings.rules = loadedData.rules.map((loadedRule: any) =>
+				this.settings.rules = loadedData.rules.map((loadedRule: Record<string, unknown>) =>
 					this._migrateRule(loadedRule, oldGlobalRenderLocation)
 				);
 			}
@@ -2933,7 +2925,7 @@ export default class VirtualFooterPlugin extends Plugin {
 	 * @param globalRenderLocation An optional global render location from a very old settings format.
 	 * @returns A migrated and normalized Rule object.
 	 */
-	private _migrateRule(loadedRule: any, globalRenderLocation?: RenderLocation): Rule {
+	private _migrateRule(loadedRule: Record<string, unknown>, globalRenderLocation?: RenderLocation): Rule {
 		const hasNegated = Object.prototype.hasOwnProperty.call(loadedRule, 'negated');
 		const migratedNegated = hasNegated
 			? normalizeBoolean(loadedRule.negated, false)
@@ -2941,9 +2933,12 @@ export default class VirtualFooterPlugin extends Plugin {
 
 		// Determine rule type, defaulting if ambiguous
 		let type: RuleType;
-		// Avoid Object.values for older TS lib targets: check enum values via keys
-		if ((Object.keys(RuleType) as string[]).some(k => (RuleType as any)[k] === loadedRule.type)) {
-			type = loadedRule.type as RuleType;
+		const ruleTypes = Object.keys(RuleType).map(key => RuleType[key as keyof typeof RuleType]);
+		const contentSources = Object.keys(ContentSource).map(key => ContentSource[key as keyof typeof ContentSource]);
+		const renderLocations = Object.keys(RenderLocation).map(key => RenderLocation[key as keyof typeof RenderLocation]);
+		const loadedType = loadedRule.type;
+		if (typeof loadedType === 'string' && ruleTypes.includes(loadedType as RuleType)) {
+			type = loadedType as RuleType;
 		} else if (typeof loadedRule.folderPath === 'string') { // Legacy field
 			type = RuleType.Folder;
 		} else {
@@ -2952,8 +2947,9 @@ export default class VirtualFooterPlugin extends Plugin {
 
 		// Determine content source, defaulting if ambiguous
 		let contentSource: ContentSource;
-		if ((Object.keys(ContentSource) as string[]).some(k => (ContentSource as any)[k] === loadedRule.contentSource)) {
-			contentSource = loadedRule.contentSource as ContentSource;
+		const loadedContentSource = loadedRule.contentSource;
+		if (typeof loadedContentSource === 'string' && contentSources.includes(loadedContentSource as ContentSource)) {
+			contentSource = loadedContentSource as ContentSource;
 		} else {
 			// If folderPath existed (legacy) and contentSource is undefined, it was likely Text
 			contentSource = (typeof loadedRule.folderPath === 'string' && loadedRule.contentSource === undefined)
@@ -2962,57 +2958,59 @@ export default class VirtualFooterPlugin extends Plugin {
 		}
 
 		const migratedRule: Rule = {
-			name: loadedRule.name || DEFAULT_SETTINGS.rules[0].name,
-			enabled: loadedRule.enabled !== undefined ? loadedRule.enabled : DEFAULT_SETTINGS.rules[0].enabled,
+			name: typeof loadedRule.name === 'string' && loadedRule.name ? loadedRule.name : DEFAULT_SETTINGS.rules[0].name,
+			enabled: typeof loadedRule.enabled === 'boolean' ? loadedRule.enabled : DEFAULT_SETTINGS.rules[0].enabled,
 			type: type,
 			negated: migratedNegated,
 			contentSource: contentSource,
-			footerText: loadedRule.footerText || '', // Retain name for compatibility
-			renderLocation: loadedRule.renderLocation || globalRenderLocation || DEFAULT_SETTINGS.rules[0].renderLocation,
-			recursive: loadedRule.recursive !== undefined ? loadedRule.recursive : true,
-			showInSeparateTab: loadedRule.showInSeparateTab || false,
-			sidebarTabName: loadedRule.sidebarTabName || '',
-			multiConditionLogic: loadedRule.multiConditionLogic || 'any',
-			renderAboveProperties: loadedRule.renderAboveProperties !== undefined ? loadedRule.renderAboveProperties : undefined,
-			renderAboveBacklinks: loadedRule.renderAboveBacklinks !== undefined ? loadedRule.renderAboveBacklinks : undefined,
-			sectionHeaderText: loadedRule.sectionHeaderText || '',
-			sectionHeaderLevel: loadedRule.sectionHeaderLevel || 'h2',
+			footerText: typeof loadedRule.footerText === 'string' ? loadedRule.footerText : '', // Retain name for compatibility
+			renderLocation: (typeof loadedRule.renderLocation === 'string' && renderLocations.includes(loadedRule.renderLocation as RenderLocation))
+				? loadedRule.renderLocation as RenderLocation
+				: globalRenderLocation || DEFAULT_SETTINGS.rules[0].renderLocation,
+			recursive: typeof loadedRule.recursive === 'boolean' ? loadedRule.recursive : true,
+			showInSeparateTab: typeof loadedRule.showInSeparateTab === 'boolean' ? loadedRule.showInSeparateTab : false,
+			sidebarTabName: typeof loadedRule.sidebarTabName === 'string' ? loadedRule.sidebarTabName : '',
+			multiConditionLogic: loadedRule.multiConditionLogic === 'all' ? 'all' : 'any',
+			renderAboveProperties: typeof loadedRule.renderAboveProperties === 'boolean' ? loadedRule.renderAboveProperties : undefined,
+			renderAboveBacklinks: typeof loadedRule.renderAboveBacklinks === 'boolean' ? loadedRule.renderAboveBacklinks : undefined,
+			sectionHeaderText: typeof loadedRule.sectionHeaderText === 'string' ? loadedRule.sectionHeaderText : '',
+			sectionHeaderLevel: typeof loadedRule.sectionHeaderLevel === 'string' ? loadedRule.sectionHeaderLevel : 'h2',
 			sectionHeaderPlacement: loadedRule.sectionHeaderPlacement === 'bottom' ? 'bottom' : 'top',
-			dataviewQuery: loadedRule.dataviewQuery || '',
-			footerFilePath: loadedRule.footerFilePath || '', // Retained name for compatibility
-			showInPopover: loadedRule.showInPopover !== undefined ? loadedRule.showInPopover : true,
-			showInEmbed: loadedRule.showInEmbed !== undefined ? loadedRule.showInEmbed : true,
-			showInCanvas: loadedRule.showInCanvas !== undefined ? loadedRule.showInCanvas : true,
+			dataviewQuery: typeof loadedRule.dataviewQuery === 'string' ? loadedRule.dataviewQuery : '',
+			footerFilePath: typeof loadedRule.footerFilePath === 'string' ? loadedRule.footerFilePath : '', // Retained name for compatibility
+			showInPopover: typeof loadedRule.showInPopover === 'boolean' ? loadedRule.showInPopover : true,
+			showInEmbed: typeof loadedRule.showInEmbed === 'boolean' ? loadedRule.showInEmbed : true,
+			showInCanvas: typeof loadedRule.showInCanvas === 'boolean' ? loadedRule.showInCanvas : true,
 		};
 
 		// Populate type-specific fields
 		if (migratedRule.type === RuleType.Folder) {
-			migratedRule.path = loadedRule.path !== undefined ? loadedRule.path :
-				(loadedRule.folderPath !== undefined ? loadedRule.folderPath : DEFAULT_SETTINGS.rules[0].path);
+			migratedRule.path = typeof loadedRule.path === 'string' ? loadedRule.path :
+				(typeof loadedRule.folderPath === 'string' ? loadedRule.folderPath : DEFAULT_SETTINGS.rules[0].path);
 		} else if (migratedRule.type === RuleType.Tag) {
-			migratedRule.tag = loadedRule.tag !== undefined ? loadedRule.tag : '';
-			migratedRule.includeSubtags = loadedRule.includeSubtags !== undefined ? loadedRule.includeSubtags : false;
+			migratedRule.tag = typeof loadedRule.tag === 'string' ? loadedRule.tag : '';
+			migratedRule.includeSubtags = typeof loadedRule.includeSubtags === 'boolean' ? loadedRule.includeSubtags : false;
 		} else if (migratedRule.type === RuleType.Property) {
-			migratedRule.propertyName = loadedRule.propertyName || '';
-			migratedRule.propertyValue = loadedRule.propertyValue || '';
+			migratedRule.propertyName = typeof loadedRule.propertyName === 'string' ? loadedRule.propertyName : '';
+			migratedRule.propertyValue = typeof loadedRule.propertyValue === 'string' ? loadedRule.propertyValue : '';
 		} else if (migratedRule.type === RuleType.Multi) {
 			migratedRule.conditions = Array.isArray(loadedRule.conditions)
-				? loadedRule.conditions.map((condition: any) => ({
-					type: condition?.type,
-					negated: normalizeBoolean(condition?.negated, false),
-					path: condition?.path,
-					recursive: condition?.recursive,
-					tag: condition?.tag,
-					includeSubtags: condition?.includeSubtags,
-					propertyName: condition?.propertyName,
-					propertyValue: condition?.propertyValue,
+				? loadedRule.conditions.map((condition: Record<string, unknown>) => ({
+					type: condition.type as 'folder' | 'tag' | 'property',
+					negated: normalizeBoolean(condition.negated, false),
+					path: condition.path as string | undefined,
+					recursive: condition.recursive as boolean | undefined,
+					tag: condition.tag as string | undefined,
+					includeSubtags: condition.includeSubtags as boolean | undefined,
+					propertyName: condition.propertyName as string | undefined,
+					propertyValue: condition.propertyValue as string | undefined,
 				}))
 				: [];
 		}
 
 		// Populate content source-specific fields
 		if (migratedRule.contentSource === ContentSource.File) {
-			migratedRule.footerFilePath = loadedRule.footerFilePath || ''; // Retained name for compatibility
+			migratedRule.footerFilePath = typeof loadedRule.footerFilePath === 'string' ? loadedRule.footerFilePath : ''; // Retained name for compatibility
 		}
 		return migratedRule; // Normalization will happen after migration
 	}
@@ -3145,10 +3143,10 @@ export default class VirtualFooterPlugin extends Plugin {
 	}
 
 	private activateAllSidebarViews() {
-		this.activateView(VIRTUAL_CONTENT_VIEW_TYPE);
+		void this.activateView(VIRTUAL_CONTENT_VIEW_TYPE);
 		this.settings.rules.forEach((rule, index) => {
 			if (rule.enabled && rule.renderLocation === RenderLocation.Sidebar && rule.showInSeparateTab) {
-				this.activateView(this.getSeparateViewId(index));
+				void this.activateView(this.getSeparateViewId(index));
 			}
 		});
 	}
@@ -3196,7 +3194,7 @@ export default class VirtualFooterPlugin extends Plugin {
 						viewId,
 						(leaf) => new VirtualContentView(leaf, this, viewId, tabName, () => this.getSeparateTabContent(viewId))
 					);
-				} catch (error) {
+				} catch {
 					// Calling `this.registerView` when the view already exists, the following error occurs.
 					// This error doesn't need special handling, but if it is left unhandled, the Settings UI will not update properly.
 
@@ -3925,8 +3923,9 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 		];
 	}
 
-	// eslint-disable-next-line obsidianmd/no-deprecated-api
-	display(): void {}
+	display(): void {
+		this.refreshSettingsUi();
+	}
 
 	private clearSuggestionCaches(): void {
 		this.allFolderPathsCache = null;
@@ -3990,7 +3989,7 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 		}
 		this.plugin.normalizeRule(duplicate);
 		this.plugin.settings.rules.splice(index + 1, 0, duplicate);
-		void this.plugin.saveSettings().then(() => this.refreshSettingsUi());
+		void this.plugin.saveSettings().then(() => this.refreshSettingsUi()).catch(() => undefined);
 	}
 
 	private async moveRule(fromIndex: number, toIndex: number): Promise<void> {
