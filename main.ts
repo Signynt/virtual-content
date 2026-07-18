@@ -13,6 +13,7 @@ import {
 	getAllTags,
 	ItemView,
 	WorkspaceLeaf,
+	SettingDefinitionItem,
 } from 'obsidian';
 
 declare module 'obsidian' {
@@ -1268,8 +1269,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		const specialClass = isHeader ? 'virtual-footer-above-properties' : 'virtual-footer-above-backlinks';
 		
 		// Create new content container
-		const activeDocument = this.getActiveDocument();
-		const groupDiv = activeDocument.createDiv() as HTMLElementWithComponent;
+		const groupDiv = container.createDiv() as HTMLElementWithComponent;
 		groupDiv.className = `${CSS_DYNAMIC_CONTENT_ELEMENT} ${cssClass}`;
 		groupDiv.dataset.sourcePath = filePath;
 		if (special) {
@@ -1452,8 +1452,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		const component = new Component();
 		component.load();
 
-		const activeDocument = this.getActiveDocument();
-		const groupDiv = activeDocument.createDiv() as HTMLElementWithComponent;
+		const groupDiv = container.createDiv() as HTMLElementWithComponent;
 		groupDiv.className = `${CSS_DYNAMIC_CONTENT_ELEMENT} ${CSS_SECTION_HEADER_GROUP_ELEMENT}`;
 		this.setSectionHeaderDataset(groupDiv, rule, ruleIndex);
 		groupDiv.dataset.sourcePath = filePath;
@@ -1918,8 +1917,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		const component = new Component();
 		component.load();
 
-		const activeDocument = this.getActiveDocument();
-		const groupDiv = activeDocument.createDiv() as HTMLElementWithComponent;
+		const groupDiv = view.containerEl.createDiv() as HTMLElementWithComponent;
 		groupDiv.className = `${CSS_DYNAMIC_CONTENT_ELEMENT} ${CSS_SECTION_HEADER_GROUP_ELEMENT}`;
 		this.setSectionHeaderDataset(groupDiv, rule, ruleIndex);
 		groupDiv.dataset.sourcePath = sourcePath;
@@ -1996,8 +1994,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		const sourcePath = view.file?.path || ''; // For MarkdownRenderer context
 
 		// Create container div for the content
-		const activeDocument = this.getActiveDocument();
-		const groupDiv = activeDocument.createDiv() as HTMLElementWithComponent;
+		const groupDiv = view.containerEl.createDiv() as HTMLElementWithComponent;
 		groupDiv.className = CSS_DYNAMIC_CONTENT_ELEMENT; // Base class for all injected content
 		groupDiv.classList.add(
 			isRenderInHeader ? CSS_HEADER_GROUP_ELEMENT : CSS_FOOTER_GROUP_ELEMENT,
@@ -3756,13 +3753,14 @@ class RuleEditorModal extends Modal {
  * Manages the settings tab UI for the VirtualFooter plugin.
  * Allows users to configure rules for dynamic content injection.
  */
-class VirtualFooterSettingTab {
+class VirtualFooterSettingTab extends PluginSettingTab {
 	// Caches for suggestion lists to improve performance
 	private allFolderPathsCache: Set<string> | null = null;
 	private allTagsCache: Set<string> | null = null;
 	private allMarkdownFilePathsCache: Set<string> | null = null;
 	private allPropertyNamesCache: Set<string> | null = null;
-	constructor(private app: App, private plugin: VirtualFooterPlugin) {
+	constructor(app: App, private plugin: VirtualFooterPlugin) {
+		super(app, plugin);
 	}
 
 	/**
@@ -3838,7 +3836,7 @@ class VirtualFooterSettingTab {
 		return this.allPropertyNamesCache;
 	}
 
-	getSettingDefinitions() {
+	getSettingDefinitions(): SettingDefinitionItem[] {
 		this.clearSuggestionCaches();
 		const rules = this.plugin.settings.rules ?? [];
 		return [
