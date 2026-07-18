@@ -3882,7 +3882,7 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 				},
 				onDelete: (idx: number) => {
 					this.plugin.settings.rules.splice(idx, 1);
-					this.plugin.saveSettings();
+					void this.plugin.saveSettings();
 					void this.refreshSettingsUi();
 				},
 				items: rules.map((rule, index) => ({
