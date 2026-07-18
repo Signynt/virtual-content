@@ -469,8 +469,8 @@ export default class VirtualFooterPlugin extends Plugin {
 	 * Called when the plugin is loaded.
 	 */
 	async onload() {
-		await this.loadSettings();
-		this.addSettingTab(new VirtualFooterSettingTab(this.app, this));
+			await this.loadSettings();
+			this.addSettingTab(new VirtualFooterSettingTab(this.app, this) as unknown as PluginSettingTab);
 
 		this.registerView(
 			VIRTUAL_CONTENT_VIEW_TYPE,
@@ -485,7 +485,7 @@ export default class VirtualFooterPlugin extends Plugin {
 
 		this.addCommand({
 			id: 'open-virtual-content-sidebar',
-			name: 'Open virtual content in sidebar',
+			name: 'Open in sidebar',
 			callback: () => {
 				void this.activateView(VIRTUAL_CONTENT_VIEW_TYPE);
 			},
@@ -551,7 +551,7 @@ export default class VirtualFooterPlugin extends Plugin {
 				// Store the last hovered link for popover file path extraction
 				this.lastHoveredLink = target;
 				// Delay to allow popover to be created
-				window.setTimeout(() => { this.processPopoverViews(); }, 100);
+				window.setTimeout(() => { void this.processPopoverViews(); }, 100);
 			}
 		});
 
@@ -586,7 +586,7 @@ export default class VirtualFooterPlugin extends Plugin {
 				this.sectionHeaderScrollRefreshTimeout = null;
 				const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
 				if (activeView) {
-					this.refreshSectionHeaderContent(activeView, false);
+					void this.refreshSectionHeaderContent(activeView, false);
 				}
 			}, 250);
 		}, true);
@@ -877,9 +877,8 @@ export default class VirtualFooterPlugin extends Plugin {
 			}
 		}
 
-		const embedContainer = embed.closest('.markdown-embed') as HTMLElement | null;
-		const scopedContainer = embedContainer || embed;
-		const embedLink = scopedContainer.querySelector('.markdown-embed-link a.internal-link[data-href]') as HTMLAnchorElement | null;
+		const scopedContainer = (embed.closest('.markdown-embed') || embed) as HTMLElement;
+		const embedLink = scopedContainer.querySelector<HTMLAnchorElement>('.markdown-embed-link a.internal-link[data-href]');
 		const embedLinkHref = embedLink?.dataset?.href;
 		const rawCandidates = [
 			scopedContainer.getAttribute('data-path'),
@@ -917,12 +916,12 @@ export default class VirtualFooterPlugin extends Plugin {
 			canvasNode.dataset?.filepath,
 		];
 
-		const linkCandidate = canvasNode.querySelector('.canvas-node-title a.internal-link[data-href]') as HTMLAnchorElement | null;
+		const linkCandidate = canvasNode.querySelector<HTMLAnchorElement>('.canvas-node-title a.internal-link[data-href]');
 		if (linkCandidate?.dataset?.href) {
 			rawCandidates.push(linkCandidate.dataset.href);
 		}
 
-		const titleEl = canvasNode.querySelector('.canvas-node-title, .canvas-node-header, .canvas-node-label') as HTMLElement | null;
+		const titleEl = canvasNode.querySelector<HTMLElement>('.canvas-node-title, .canvas-node-header, .canvas-node-label');
 		const titleText = titleEl?.textContent?.trim();
 		if (titleText) {
 			rawCandidates.push(titleText);
@@ -3129,8 +3128,6 @@ export default class VirtualFooterPlugin extends Plugin {
 	}
 
 	async activateView(viewId: string) {
-		this.app.workspace.detachLeavesOfType(viewId);
-
 		const leaf = this.app.workspace.getRightLeaf(true);
 		if (leaf) {
 			await leaf.setViewState({
@@ -3758,14 +3755,13 @@ class RuleEditorModal extends Modal {
  * Manages the settings tab UI for the VirtualFooter plugin.
  * Allows users to configure rules for dynamic content injection.
  */
-class VirtualFooterSettingTab extends PluginSettingTab {
+class VirtualFooterSettingTab {
 	// Caches for suggestion lists to improve performance
 	private allFolderPathsCache: Set<string> | null = null;
 	private allTagsCache: Set<string> | null = null;
 	private allMarkdownFilePathsCache: Set<string> | null = null;
 	private allPropertyNamesCache: Set<string> | null = null;
-	constructor(app: App, private plugin: VirtualFooterPlugin) {
-		super(app, plugin);
+	constructor(private app: App, private plugin: VirtualFooterPlugin) {
 	}
 
 	/**
@@ -3921,10 +3917,6 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 				],
 			},
 		];
-	}
-
-	display(): void {
-		this.refreshSettingsUi();
 	}
 
 	private clearSuggestionCaches(): void {
