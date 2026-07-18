@@ -16,12 +16,6 @@ import {
 	SettingDefinitionItem,
 } from 'obsidian';
 
-declare module 'obsidian' {
-	interface ButtonComponent {
-		setDestructive(): this;
-	}
-}
-
 // --- Enums ---
 
 /** Defines the type of a rule, determining how it matches files (e.g., by folder, tag, or property). */
@@ -401,17 +395,14 @@ export default class VirtualFooterPlugin extends Plugin {
 	private canvasInteractionHandler: ((event: Event) => void) | null = null;
 
 	private getActiveFileForVirtualContent(): TFile | null {
-		const activeView = this.app.workspace.getActiveViewOfType(MarkdownView) as { file?: unknown } | undefined;
+		const activeLeaf = this.app.workspace.activeLeaf;
+		const activeView = activeLeaf?.view as { file?: unknown } | undefined;
 		if (activeView?.file instanceof TFile) {
 			return activeView.file;
 		}
 
 		const workspaceFile = this.app.workspace.getActiveFile();
 		return workspaceFile instanceof TFile ? workspaceFile : null;
-	}
-
-	private getActiveDocument(): Document {
-		return activeDocument;
 	}
 
 	private async processSidebarContentForFilePath(filePath: string): Promise<void> {
@@ -471,7 +462,7 @@ export default class VirtualFooterPlugin extends Plugin {
 	 */
 	async onload() {
 			await this.loadSettings();
-			this.addSettingTab(new VirtualFooterSettingTab(this.app, this) as unknown as PluginSettingTab);
+		this.addSettingTab(new VirtualFooterSettingTab(this.app, this));
 
 		this.registerView(
 			VIRTUAL_CONTENT_VIEW_TYPE,
@@ -481,26 +472,24 @@ export default class VirtualFooterPlugin extends Plugin {
 		this.registerDynamicViews();
 
 		this.addRibbonIcon('text-select', 'Open virtual content in sidebar', () => {
-			void this.activateView(VIRTUAL_CONTENT_VIEW_TYPE);
+			this.activateView(VIRTUAL_CONTENT_VIEW_TYPE);
 		});
 
 		this.addCommand({
 			id: 'open-virtual-content-sidebar',
-			name: 'Open in sidebar',
+			name: 'Open virtual content in sidebar',
 			callback: () => {
-				void this.activateView(VIRTUAL_CONTENT_VIEW_TYPE);
+				this.activateView(VIRTUAL_CONTENT_VIEW_TYPE);
 			},
 		});
 
 		this.addCommand({
 			id: 'open-all-virtual-content-sidebar-tabs',
-			name: 'Open all sidebar tabs',
+			name: 'Open all virtual footer sidebar tabs',
 			callback: () => {
-				void this.activateAllSidebarViews();
+				this.activateAllSidebarViews();
 			},
 		});
-
-		const activeDocument = this.getActiveDocument();
 
 		// Define event handlers
 		const handleViewUpdate = () => {
@@ -545,14 +534,14 @@ export default class VirtualFooterPlugin extends Plugin {
 		);
 
 		// Listen for hover events to detect when popovers are created
-		this.registerDomEvent(activeDocument, 'mouseover', (event: MouseEvent) => {
+		this.registerDomEvent(document, 'mouseover', (event: MouseEvent) => {
 			const target = event.target as HTMLElement;
 			// Check if the target is a link that could trigger a popover
 			if (target.matches('a.internal-link, .internal-link a, [data-href]')) {
 				// Store the last hovered link for popover file path extraction
 				this.lastHoveredLink = target;
 				// Delay to allow popover to be created
-				window.setTimeout(() => { void this.processPopoverViews(); }, 100);
+				setTimeout(() => {this.processPopoverViews();}, 100);
 			}
 		});
 
@@ -564,18 +553,18 @@ export default class VirtualFooterPlugin extends Plugin {
 				collapseIndicator?.closest('.markdown-preview-view') &&
 				sectionHeaderTarget
 			) {
-				window.setTimeout(() => {
+				setTimeout(() => {
 					const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
 					if (activeView) {
-						void this.refreshSectionHeaderContent(activeView, true, sectionHeaderTarget);
+						this.refreshSectionHeaderContent(activeView, true, sectionHeaderTarget);
 					}
 				}, 150);
 			}
 		};
-		activeDocument.addEventListener('click', handleSectionCollapseClick, true);
-		this.register(() => activeDocument.removeEventListener('click', handleSectionCollapseClick, true));
+		document.addEventListener('click', handleSectionCollapseClick, true);
+		this.register(() => document.removeEventListener('click', handleSectionCollapseClick, true));
 
-		this.registerDomEvent(activeDocument, 'scroll', (event: Event) => {
+		this.registerDomEvent(document, 'scroll', (event: Event) => {
 			const target = event.target as HTMLElement;
 			if (!target.closest?.('.markdown-preview-view')) {
 				return;
@@ -587,20 +576,20 @@ export default class VirtualFooterPlugin extends Plugin {
 				this.sectionHeaderScrollRefreshTimeout = null;
 				const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
 				if (activeView) {
-					void this.refreshSectionHeaderContent(activeView, false);
+					this.refreshSectionHeaderContent(activeView, false);
 				}
 			}, 250);
 		}, true);
 
 		// Listen for clicks to detect when popovers might switch to editing mode
-		this.registerDomEvent(activeDocument, 'click', (event: MouseEvent) => {
+		this.registerDomEvent(document, 'click', (event: MouseEvent) => {
 			const target = event.target as HTMLElement;
 			// Check if the click is within a popover
 			const popover = target.closest('.popover.hover-popover');
 			if (popover) {
 				//console.log("VirtualContent: Click detected in popover, checking for mode change");
 				// Delay to allow any mode changes to complete
-				window.setTimeout(() => { void this.processPopoverViews(); }, 150);
+				setTimeout(() => {this.processPopoverViews();}, 150);
 			}
 		});
 
@@ -609,29 +598,30 @@ export default class VirtualFooterPlugin extends Plugin {
 			for (const mutation of mutations) {
 				if (mutation.type === 'childList') {
 					mutation.addedNodes.forEach(node => {
-						if (node.instanceOf(HTMLElement)) {
+						if (node instanceof HTMLElement) {
 							// Check if a popover was added
 							if (node.classList.contains('popover') && node.classList.contains('hover-popover')) {
 								//console.log("VirtualContent: Popover created, processing views");
 								// Small delay to ensure the popover content is fully loaded
-								window.setTimeout(() => { void this.processPopoverViews(); }, 50);
+								setTimeout(() => {this.processPopoverViews();}, 50);
 							}
 							// Also check for popovers added within other elements
 							const popovers = node.querySelectorAll('.popover.hover-popover');
 							if (popovers.length > 0) {
 								//console.log("VirtualContent: Popover(s) found in added content, processing views");
-								window.setTimeout(() => { void this.processPopoverViews(); }, 50);
+								setTimeout(() => {this.processPopoverViews();}, 50);
 							}
 						}
 					});
 				}
 				// Listen for attribute changes that might indicate mode switching in popovers
-				if (mutation.type === 'attributes' && mutation.target.instanceOf(HTMLElement)) {
+				if (mutation.type === 'attributes' && mutation.target instanceof HTMLElement) {
 					const target = mutation.target;
 					// Check if this is a popover that gained or lost the is-editing class
 					if (target.classList.contains('popover') && target.classList.contains('hover-popover')) {
 						if (mutation.attributeName === 'class') {
-							//console.log(`VirtualContent: Popover mode changed, is-editing: ${target.classList.contains('is-editing')}`);
+							const hasEditingClass = target.classList.contains('is-editing');
+							//console.log(`VirtualContent: Popover mode changed, is-editing: ${hasEditingClass}`);
 							//setTimeout(() => {this.processPopoverViews();}, 100); // Slightly longer delay for mode changes
 						}
 					}
@@ -641,7 +631,7 @@ export default class VirtualFooterPlugin extends Plugin {
 
 		// Observe the entire document for popover creation
 		if (this.popoverObserver) {
-			this.popoverObserver.observe(activeDocument.body, {
+			this.popoverObserver.observe(document.body, {
 				childList: true,
 				subtree: true
 			});
@@ -654,13 +644,13 @@ export default class VirtualFooterPlugin extends Plugin {
 					if (mutation.type === 'childList') {
 						const addedOrRemovedNodes = [...mutation.addedNodes, ...mutation.removedNodes];
 						const hasCanvasNodeChange = addedOrRemovedNodes.some((node) => {
-							return node.instanceOf(HTMLElement) && (node.classList.contains('canvas-node') || node.querySelector('.canvas-node'));
+							return node instanceof HTMLElement && (node.classList.contains('canvas-node') || node.querySelector('.canvas-node'));
 						});
 						if (hasCanvasNodeChange) {
 							this.queueCanvasEmbedRefresh();
 						}
 					}
-					if (mutation.type === 'attributes' && mutation.target.instanceOf(HTMLElement)) {
+					if (mutation.type === 'attributes' && mutation.target instanceof HTMLElement) {
 						const target = mutation.target;
 						if (target.classList.contains('canvas-node')) {
 							this.queueCanvasEmbedRefresh();
@@ -670,7 +660,7 @@ export default class VirtualFooterPlugin extends Plugin {
 			});
 
 			if (this.canvasObserver) {
-				this.canvasObserver.observe(activeDocument.body, {
+				this.canvasObserver.observe(document.body, {
 					childList: true,
 					subtree: true,
 					attributes: true,
@@ -684,8 +674,8 @@ export default class VirtualFooterPlugin extends Plugin {
 					this.queueCanvasEmbedRefresh();
 				}
 			};
-			this.registerDomEvent(activeDocument, 'wheel', this.canvasInteractionHandler, true);
-			this.registerDomEvent(activeDocument, 'pointerup', this.canvasInteractionHandler, true);
+			this.registerDomEvent(document, 'wheel', this.canvasInteractionHandler, true);
+			this.registerDomEvent(document, 'pointerup', this.canvasInteractionHandler, true);
 		}
 
 		// Initial processing for any currently active view, once layout is ready
@@ -701,14 +691,19 @@ export default class VirtualFooterPlugin extends Plugin {
 	 * Called when the plugin is unloaded.
 	 * Cleans up all injected content and observers.
 	 */
-	onunload() {
+	async onunload() {
 		this.popoverObserver?.disconnect();
 		this.canvasObserver?.disconnect();
+		this.app.workspace.detachLeavesOfType(VIRTUAL_CONTENT_VIEW_TYPE);
+		this.settings.rules.forEach((rule, index) => {
+			if (rule.renderLocation === RenderLocation.Sidebar && rule.showInSeparateTab) {
+				this.app.workspace.detachLeavesOfType(this.getSeparateViewId(index));
+			}
+		});
 		this.clearAllViewsDynamicContent();
 
 		// Clean up any remaining DOM elements and components directly
-		const activeDocument = this.getActiveDocument();
-		activeDocument.querySelectorAll(`.${CSS_DYNAMIC_CONTENT_ELEMENT}`).forEach(el => {
+		document.querySelectorAll(`.${CSS_DYNAMIC_CONTENT_ELEMENT}`).forEach(el => {
 			const componentHolder = el as HTMLElementWithComponent;
 			if (componentHolder.component) {
 				componentHolder.component.unload();
@@ -717,8 +712,8 @@ export default class VirtualFooterPlugin extends Plugin {
 		});
 
 		// Remove custom CSS classes applied for styling
-		activeDocument.querySelectorAll(`.${CSS_VIRTUAL_FOOTER_CM_PADDING}`).forEach(el => el.classList.remove(CSS_VIRTUAL_FOOTER_CM_PADDING));
-		activeDocument.querySelectorAll(`.${CSS_VIRTUAL_FOOTER_REMOVE_FLEX}`).forEach(el => el.classList.remove(CSS_VIRTUAL_FOOTER_REMOVE_FLEX));
+		document.querySelectorAll(`.${CSS_VIRTUAL_FOOTER_CM_PADDING}`).forEach(el => el.classList.remove(CSS_VIRTUAL_FOOTER_CM_PADDING));
+		document.querySelectorAll(`.${CSS_VIRTUAL_FOOTER_REMOVE_FLEX}`).forEach(el => el.classList.remove(CSS_VIRTUAL_FOOTER_REMOVE_FLEX));
 
 		// WeakMaps will be garbage collected, but explicit clearing is good practice if needed.
 		// Observers and pending injections are cleared per-view in `removeDynamicContentFromView`.
@@ -788,8 +783,7 @@ export default class VirtualFooterPlugin extends Plugin {
 	 */
 	private processPopoverViews(): void {
 		// Find all popover elements in the DOM
-		const activeDocument = this.getActiveDocument();
-		const popovers = activeDocument.querySelectorAll('.popover.hover-popover');
+		const popovers = document.querySelectorAll('.popover.hover-popover');
 		
 		popovers.forEach(popover => {
 			// Look for markdown views within each popover
@@ -1068,17 +1062,16 @@ export default class VirtualFooterPlugin extends Plugin {
 	}
 
 	private getCanvasNodes(): HTMLElement[] {
-		const activeDocument = this.getActiveDocument();
-		const canvasRoot = activeDocument.querySelector('.canvas');
+		const canvasRoot = document.querySelector('.canvas');
 		const scopedNodes = canvasRoot ? Array.from(canvasRoot.querySelectorAll<HTMLElement>('.canvas-node')) : [];
 		if (scopedNodes.length > 0) {
 			return scopedNodes;
 		}
-		return Array.from(activeDocument.querySelectorAll<HTMLElement>('.canvas-node'));
+		return Array.from(document.querySelectorAll<HTMLElement>('.canvas-node'));
 	}
 
 	private isCanvasActive(): boolean {
-		return !!this.getActiveDocument().querySelector('.workspace-leaf.mod-active .canvas, .workspace-leaf.mod-active .canvas-wrapper');
+		return !!document.querySelector('.workspace-leaf.mod-active .canvas, .workspace-leaf.mod-active .canvas-wrapper');
 	}
 
 	private async processCanvasEmbeds(): Promise<void> {
@@ -1088,8 +1081,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		if (!this.isCanvasActive()) {
 			return;
 		}
-		const activeDocument = this.getActiveDocument();
-		const canvasRoot = activeDocument.querySelector('.canvas');
+		const canvasRoot = document.querySelector('.canvas');
 		if (!canvasRoot) {
 			return;
 		}
@@ -1269,7 +1261,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		const specialClass = isHeader ? 'virtual-footer-above-properties' : 'virtual-footer-above-backlinks';
 		
 		// Create new content container
-		const groupDiv = container.createDiv() as HTMLElementWithComponent;
+		const groupDiv = document.createElement('div') as HTMLElementWithComponent;
 		groupDiv.className = `${CSS_DYNAMIC_CONTENT_ELEMENT} ${cssClass}`;
 		groupDiv.dataset.sourcePath = filePath;
 		if (special) {
@@ -1452,7 +1444,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		const component = new Component();
 		component.load();
 
-		const groupDiv = container.createDiv() as HTMLElementWithComponent;
+		const groupDiv = document.createElement('div') as HTMLElementWithComponent;
 		groupDiv.className = `${CSS_DYNAMIC_CONTENT_ELEMENT} ${CSS_SECTION_HEADER_GROUP_ELEMENT}`;
 		this.setSectionHeaderDataset(groupDiv, rule, ruleIndex);
 		groupDiv.dataset.sourcePath = filePath;
@@ -1711,7 +1703,7 @@ export default class VirtualFooterPlugin extends Plugin {
 	private getPreviewSectionEnd(heading: HTMLElement, level: number): Node | null {
 		let node: Node | null = heading.parentElement?.nextSibling || heading.nextSibling;
 		while (node) {
-			if (node.instanceOf(HTMLElement)) {
+			if (node instanceof HTMLElement) {
 				const nextHeading = node.matches('h1,h2,h3,h4,h5,h6')
 					? node
 					: node.querySelector<HTMLElement>('h1,h2,h3,h4,h5,h6');
@@ -1730,7 +1722,7 @@ export default class VirtualFooterPlugin extends Plugin {
 	private getEditorSectionEnd(headingLine: HTMLElement, level: number): Node | null {
 		let node: Node | null = headingLine.nextSibling;
 		while (node) {
-			if (node.instanceOf(HTMLElement)) {
+			if (node instanceof HTMLElement) {
 				for (let currentLevel = 1; currentLevel <= level; currentLevel++) {
 					if (node.classList.contains(`HyperMD-header-${currentLevel}`)) {
 						return node;
@@ -1917,7 +1909,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		const component = new Component();
 		component.load();
 
-		const groupDiv = view.containerEl.createDiv() as HTMLElementWithComponent;
+		const groupDiv = document.createElement('div') as HTMLElementWithComponent;
 		groupDiv.className = `${CSS_DYNAMIC_CONTENT_ELEMENT} ${CSS_SECTION_HEADER_GROUP_ELEMENT}`;
 		this.setSectionHeaderDataset(groupDiv, rule, ruleIndex);
 		groupDiv.dataset.sourcePath = sourcePath;
@@ -1948,7 +1940,7 @@ export default class VirtualFooterPlugin extends Plugin {
 				} else {
 					const endNode = this.getPreviewSectionEnd(heading, level);
 					if (endNode) {
-						const previousElement = endNode.previousSibling?.instanceOf(HTMLElement) ? endNode.previousSibling : null;
+						const previousElement = endNode.previousSibling instanceof HTMLElement ? endNode.previousSibling : null;
 						if (previousElement && previousElement !== anchor) {
 							previousElement.appendChild(groupDiv);
 						} else {
@@ -1994,7 +1986,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		const sourcePath = view.file?.path || ''; // For MarkdownRenderer context
 
 		// Create container div for the content
-		const groupDiv = view.containerEl.createDiv() as HTMLElementWithComponent;
+		const groupDiv = document.createElement('div') as HTMLElementWithComponent;
 		groupDiv.className = CSS_DYNAMIC_CONTENT_ELEMENT; // Base class for all injected content
 		groupDiv.classList.add(
 			isRenderInHeader ? CSS_HEADER_GROUP_ELEMENT : CSS_FOOTER_GROUP_ELEMENT,
@@ -2024,22 +2016,20 @@ export default class VirtualFooterPlugin extends Plugin {
 			console.error("VirtualFooter: Error during initial render, will retry after delay:", error);
 			
 			// Add a placeholder while waiting to retry
-			const placeholderEl = groupDiv.createDiv({ cls: "virtual-footer-loading" });
+			const placeholderEl = groupDiv.createEl("div", { cls: "virtual-footer-loading" });
 			placeholderEl.createEl("p", { text: "Loading virtual content..." });
 			
 			// Schedule a retry after a delay to allow other plugins to initialize
-			window.setTimeout(() => {
-				void (async () => {
+			setTimeout(async () => {
 					try {
 						placeholderEl.remove();
 						await MarkdownRenderer.render(this.app, combinedContentText, groupDiv, sourcePath, component);
 						this.attachInternalLinkHandlers(groupDiv, sourcePath, component);
 					} catch (secondError) {
 						console.error("VirtualFooter: Failed to render content after retry:", secondError);
-						const errorEl = groupDiv.createDiv({ cls: "virtual-footer-error" });
+					const errorEl = groupDiv.createEl("div", { cls: "virtual-footer-error" });
 						errorEl.createEl("p", { text: "Error rendering virtual content. Please reload the page or check the content for errors." });
 					}
-				})();
 			}, 2000); // 2 second delay
 		}
 
@@ -3126,6 +3116,8 @@ export default class VirtualFooterPlugin extends Plugin {
 	}
 
 	async activateView(viewId: string) {
+		this.app.workspace.detachLeavesOfType(viewId);
+
 		const leaf = this.app.workspace.getRightLeaf(true);
 		if (leaf) {
 			await leaf.setViewState({
