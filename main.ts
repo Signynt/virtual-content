@@ -465,7 +465,7 @@ export default class VirtualFooterPlugin extends Plugin {
 	 */
 	async onload() {
 			await this.loadSettings();
-			this.addSettingTab(new VirtualFooterSettingTab(this.app, this) as unknown as PluginSettingTab);
+			this.addSettingTab(new VirtualFooterSettingTab(this.app, this));
 
 		this.registerView(
 			VIRTUAL_CONTENT_VIEW_TYPE,
@@ -3874,16 +3874,16 @@ class VirtualFooterSettingTab extends PluginSettingTab {
 					name: 'Add rule',
 					action: () => this.openNewRuleModal(),
 				},
-				onReorder: async (oldIndex: number, newIndex: number) => {
+				onReorder: (oldIndex: number, newIndex: number) => {
 					const rulesList = this.plugin.settings.rules;
 					const [moved] = rulesList.splice(oldIndex, 1);
 					rulesList.splice(newIndex, 0, moved);
-					await this.plugin.saveSettings();
+					void this.plugin.saveSettings();
 				},
-				onDelete: async (idx: number) => {
+				onDelete: (idx: number) => {
 					this.plugin.settings.rules.splice(idx, 1);
-					await this.plugin.saveSettings();
-					this.refreshSettingsUi();
+					this.plugin.saveSettings();
+					void this.refreshSettingsUi();
 				},
 				items: rules.map((rule, index) => ({
 					name: this.getRuleDisplayName(rule, index),
