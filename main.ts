@@ -877,7 +877,8 @@ export default class VirtualFooterPlugin extends Plugin {
 			}
 		}
 
-		const scopedContainer = (embed.closest('.markdown-embed') || embed) as HTMLElement;
+		const embedContainer = embed.closest('.markdown-embed') as HTMLElement | null;
+		const scopedContainer = embedContainer || embed;
 		const embedLink = scopedContainer.querySelector<HTMLAnchorElement>('.markdown-embed-link a.internal-link[data-href]');
 		const embedLinkHref = embedLink?.dataset?.href;
 		const rawCandidates = [
@@ -1268,7 +1269,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		
 		// Create new content container
 		const activeDocument = this.getActiveDocument();
-		const groupDiv = activeDocument.createEl('div') as HTMLElementWithComponent;
+		const groupDiv = activeDocument.createDiv() as HTMLElementWithComponent;
 		groupDiv.className = `${CSS_DYNAMIC_CONTENT_ELEMENT} ${cssClass}`;
 		groupDiv.dataset.sourcePath = filePath;
 		if (special) {
@@ -1452,7 +1453,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		component.load();
 
 		const activeDocument = this.getActiveDocument();
-		const groupDiv = activeDocument.createEl('div') as HTMLElementWithComponent;
+		const groupDiv = activeDocument.createDiv() as HTMLElementWithComponent;
 		groupDiv.className = `${CSS_DYNAMIC_CONTENT_ELEMENT} ${CSS_SECTION_HEADER_GROUP_ELEMENT}`;
 		this.setSectionHeaderDataset(groupDiv, rule, ruleIndex);
 		groupDiv.dataset.sourcePath = filePath;
@@ -1918,7 +1919,7 @@ export default class VirtualFooterPlugin extends Plugin {
 		component.load();
 
 		const activeDocument = this.getActiveDocument();
-		const groupDiv = activeDocument.createEl('div') as HTMLElementWithComponent;
+		const groupDiv = activeDocument.createDiv() as HTMLElementWithComponent;
 		groupDiv.className = `${CSS_DYNAMIC_CONTENT_ELEMENT} ${CSS_SECTION_HEADER_GROUP_ELEMENT}`;
 		this.setSectionHeaderDataset(groupDiv, rule, ruleIndex);
 		groupDiv.dataset.sourcePath = sourcePath;
@@ -1996,7 +1997,7 @@ export default class VirtualFooterPlugin extends Plugin {
 
 		// Create container div for the content
 		const activeDocument = this.getActiveDocument();
-		const groupDiv = activeDocument.createEl('div') as HTMLElementWithComponent;
+		const groupDiv = activeDocument.createDiv() as HTMLElementWithComponent;
 		groupDiv.className = CSS_DYNAMIC_CONTENT_ELEMENT; // Base class for all injected content
 		groupDiv.classList.add(
 			isRenderInHeader ? CSS_HEADER_GROUP_ELEMENT : CSS_FOOTER_GROUP_ELEMENT,
@@ -2026,7 +2027,7 @@ export default class VirtualFooterPlugin extends Plugin {
 			console.error("VirtualFooter: Error during initial render, will retry after delay:", error);
 			
 			// Add a placeholder while waiting to retry
-			const placeholderEl = groupDiv.createEl("div", { cls: "virtual-footer-loading" });
+			const placeholderEl = groupDiv.createDiv({ cls: "virtual-footer-loading" });
 			placeholderEl.createEl("p", { text: "Loading virtual content..." });
 			
 			// Schedule a retry after a delay to allow other plugins to initialize
@@ -2038,7 +2039,7 @@ export default class VirtualFooterPlugin extends Plugin {
 						this.attachInternalLinkHandlers(groupDiv, sourcePath, component);
 					} catch (secondError) {
 						console.error("VirtualFooter: Failed to render content after retry:", secondError);
-						const errorEl = groupDiv.createEl("div", { cls: "virtual-footer-error" });
+						const errorEl = groupDiv.createDiv({ cls: "virtual-footer-error" });
 						errorEl.createEl("p", { text: "Error rendering virtual content. Please reload the page or check the content for errors." });
 					}
 				})();
@@ -3135,7 +3136,7 @@ export default class VirtualFooterPlugin extends Plugin {
 				active: true,
 			});
 
-			this.app.workspace.revealLeaf(leaf);
+			await this.app.workspace.revealLeaf(leaf);
 		}
 	}
 
