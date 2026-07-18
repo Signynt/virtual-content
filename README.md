@@ -1,9 +1,9 @@
 # Virtual Content
 > Previously known as "Virtual Footer"
 
-Set rules to add markdown text to files based on rules. This text gets rendered normally, including dataview blocks or Obsidian Bases. Your notes don't get modified or changed, the given markdown text is simply rendered "virtually". Rules can be defined based on folders, tags or properties. The content to be included can be entered directly in the plugin settings, or come from a file in your vault.
+Define rules to display markdown text in notes. This text gets rendered as if it were part of the file, including dataview blocks or Obsidian Bases. Your notes don't get modified or changed, the given markdown text is simply rendered "virtually". Rules can be defined based on folders, tags or properties. The content to be included can be entered directly in the plugin settings, or come from a note in your vault.
 
-This is especially useful if you have many files with the same dataview block. Instead of pasting the dataview codeblock into every note, you can simply add it with this plugin. This prevents unecessary file bloat, while also letting you easily change the code for all files at the same time.
+This is especially useful if you have many notes with the same dataview block. Instead of pasting the dataview codeblock into every note, you can simply add it with this plugin. This prevents unecessary file bloat, while also letting you easily change the text for all notes at the same time.
 
 ## Features
 - Works with Dataview, Datacore and native Obisidan Bases
@@ -11,10 +11,10 @@ This is especially useful if you have many files with the same dataview block. I
 	- Rules can be set to include or exclude subfolders and subtags (recursive matching)
 	- Multi-condition rules are possible, allowing you to define multiple conditions for one rule (using AND/OR)
 	- Dataview rules can be used to create complex conditions
-- Lets you select wether the "virtual content" gets added as a footer (end of file), a header (below properties) or in the sidebar
+- Lets you select wether the "virtual content" gets added as a footer (end of note), a header (below properties) or in the sidebar
 	- Lets you choose if all sidebar "virtual content" gets added to the same sidebar tab, or if it should be shown in it's own tab
 - Supports virtual content at the top or bottom of sections (defined using headings)
-- Allows for "virtual content" to be defined in the plugin settings, or in a markdown file
+- Allows for "virtual content" to be defined in the plugin settings, or in a note from your vault
 - Rules can be enabled or disabled from the plugin settings
 
 ## Example use cases
@@ -33,7 +33,7 @@ SORT file.link DESC
 ```
 ``````
 
-Instead of having to add this to each file, I can simply add a rule to the folder "Authors" which contains the above text, and it will be automatically shown in each file.
+Instead of having to add this to each note, I can simply add a rule to the folder "Authors" which contains the above text, and it will be automatically shown in each note.
 I can do this with as many folders as I like.
 
 ![virtual-footer-screenshot](https://github.com/user-attachments/assets/391cf294-9b28-4408-b5ef-673bdf400771)
@@ -45,8 +45,8 @@ I can do this with as many folders as I like.
 ### Customizable backlinks
 Some users use Virtual Content to sort their backlinks based on folder or tag.
 
-### Displaying tags used in a file
-Other users use Virtual Content at the top of a file to show tags used in the body of their notes. Check out [this issue](https://github.com/Signynt/virtual-content/issues/5#issuecomment-2919648582) for examples!
+### Displaying tags used in a note
+Other users use Virtual Content at the top of a note to show tags used in the body of their notes. Check out [this issue](https://github.com/Signynt/virtual-content/issues/5#issuecomment-2919648582) for examples!
 
 ### Displaying related notes in your daily note
 I use this dataviewjs to display notes which were created, modified on that day or reference my daily note.
@@ -115,7 +115,7 @@ if (relatedFiles.length > 0) {
 `````
 
 ### Displaying dataview in the sidebar
-You can also use Virtual Content to display dataview (or anything else) in the sidebar. This is useful if you want to see the results of a dataview query without having to scroll to the bottom of the file.
+You can also use Virtual Content to display dataview (or anything else) in the sidebar. This is useful if you want to see the results of a dataview query without having to scroll to the bottom of the note.
 Just select the "Sidebar" option in the settings, and use the "Open virtual content in sidebar" command.
 
 ![Untitled](https://github.com/user-attachments/assets/0fa7067a-596e-422b-b676-3f435fa1d49b)
