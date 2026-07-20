@@ -1,7 +1,7 @@
 {
 	"name": "virtual-footer",
 	"version": "1.0.37",
-	"description": "Display markdown text (including dataview queries or Bases) at the bottom, top or in the sidebar for all notes which match a specified rule, without modifying them.",
+	"description": "Display markdown text (including dataview queries or Bases) at the bottom, top or in the sidebar for all notes which match a specified rule, without modifying them (sort of like a dynamic template).",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",

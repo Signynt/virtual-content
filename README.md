@@ -3,6 +3,8 @@
 
 Define rules to display markdown text in notes. This text gets rendered as if it were part of the file, including dataview blocks or Obsidian Bases. Your notes don't get modified or changed, the given markdown text is simply rendered "virtually". Rules can be defined based on folders, tags or properties. The content to be included can be entered directly in the plugin settings, or come from a note in your vault.
 
+This acts as a sort of template, which can be dynamically redefined after the fact.
+
 This is especially useful if you have many notes with the same dataview block. Instead of pasting the dataview codeblock into every note, you can simply add it with this plugin. This prevents unecessary file bloat, while also letting you easily change the text for all notes at the same time.
 
 ## Features
