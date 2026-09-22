@@ -368,16 +368,19 @@ export class VirtualContentView extends ItemView {
  */
 export default class VirtualFooterPlugin extends Plugin {
 	settings: VirtualFooterSettings = DEFAULT_SETTINGS;
-	/** Stores pending content injections for preview mode, awaiting DOM availability. */
-	private pendingPreviewInjections: WeakMap<MarkdownView, { 
-		headerDiv?: HTMLElementWithComponent, 
-		footerDiv?: HTMLElementWithComponent,
-		headerAbovePropertiesDiv?: HTMLElementWithComponent,
-		footerAboveBacklinksDiv?: HTMLElementWithComponent,
-		filePath?: string
-	}> = new WeakMap();
-	/** Manages MutationObservers for views in preview mode to detect when injection targets are ready. */
-	private previewObservers: WeakMap<MarkdownView, MutationObserver> = new WeakMap();
+	private viewRenders = new Map<MarkdownView, { path: string; mode: unknown; source: unknown; component: Component }>();
+
+	private isCurrentRender(view: MarkdownView, render: { path: string; mode: unknown; source: unknown; component: Component }): boolean {
+		const state = view.getState();
+		return this.viewRenders.get(view) === render && view.containerEl.isConnected &&
+			view.file?.path === render.path && state.mode === render.mode && state.source === render.source;
+	}
+
+	private cancelViewRender(view: MarkdownView): void {
+		const render = this.viewRenders.get(view);
+		this.viewRenders.delete(view);
+		render?.component.unload();
+	}
 	private initialLayoutReadyProcessed = false;
 	private lastSidebarContent: { content: string, sourcePath: string } | null = null;
 	private lastSeparateTabContents: Map<string, { content: string, sourcePath: string }> = new Map();
@@ -498,6 +501,9 @@ export default class VirtualFooterPlugin extends Plugin {
 
 		// Define event handlers
 		const handleViewUpdate = () => {
+			for (const [view, render] of this.viewRenders) {
+				if (!this.isCurrentRender(view, render)) this.cancelViewRender(view);
+			}
 			// Always trigger an update if the layout is ready.
 			// Used for file-open and layout-change.
 			if (this.initialLayoutReadyProcessed) {
@@ -714,10 +720,8 @@ export default class VirtualFooterPlugin extends Plugin {
 		activeDocument.querySelectorAll(`.${CSS_VIRTUAL_FOOTER_CM_PADDING}`).forEach(el => el.classList.remove(CSS_VIRTUAL_FOOTER_CM_PADDING));
 		activeDocument.querySelectorAll(`.${CSS_VIRTUAL_FOOTER_REMOVE_FLEX}`).forEach(el => el.classList.remove(CSS_VIRTUAL_FOOTER_REMOVE_FLEX));
 
-		// WeakMaps will be garbage collected, but explicit clearing is good practice if needed.
-		// Observers and pending injections are cleared per-view in `removeDynamicContentFromView`.
-		this.previewObservers = new WeakMap();
-		this.pendingPreviewInjections = new WeakMap();
+		// Include pending renders in closed or auxiliary views during unload.
+		for (const view of this.viewRenders.keys()) this.cancelViewRender(view);
 		this.embedObservers = new WeakMap();
 		this.embedRefreshTimeouts = new WeakMap();
 		if (this.canvasRefreshTimeout !== null) {
@@ -1527,9 +1531,16 @@ export default class VirtualFooterPlugin extends Plugin {
 		// Check if this is a popover view
 		const isPopoverView = this.isInPopover(view);
 
-		await this.removeDynamicContentFromView(view, true); // Clear existing content first, preserving section content until its target is found
+		const cleanup = this.removeDynamicContentFromView(view, true);
+		const initialState = view.getState();
+		const render = { path: view.file.path, mode: initialState.mode, source: initialState.source, component: new Component() };
+		render.component.load();
+		this.viewRenders.set(view, render);
+		await cleanup;
+		if (!this.isCurrentRender(view, render)) return; // Clear existing content first, preserving section content until its target is found
 		this.removeStaleSectionHeaderContent(view);
-		const applicableRulesWithContent = await this._getApplicableRulesAndContent(view.file.path);
+		const applicableRulesWithContent = await this._getApplicableRulesAndContent(render.path);
+		if (!this.isCurrentRender(view, render)) return;
 
 		// Filter rules based on popover visibility setting
 		const filteredRules = applicableRulesWithContent.filter(({ rule }) => {
@@ -1606,67 +1617,44 @@ export default class VirtualFooterPlugin extends Plugin {
 			this.removeFooterBottomPadding(view);
 		}
 
-		let pendingHeaderDiv: HTMLElementWithComponent | null = null;
-		let pendingFooterDiv: HTMLElementWithComponent | null = null;
-		let pendingHeaderAbovePropertiesDiv: HTMLElementWithComponent | null = null;
-		let pendingFooterAboveBacklinksDiv: HTMLElementWithComponent | null = null;
-
 		// Render and inject content based on view mode, handling each positioning group separately
 		if (shouldRenderInReading || shouldRenderInLivePreview || shouldRenderInSource) {
 			// Handle normal header content
 			if (headerContentGroups.normal.length > 0) {
 				const combinedContent = headerContentGroups.normal.join(contentSeparator);
-				const result = await this.renderAndInjectGroupedContent(view, combinedContent, RenderLocation.Header, false);
-				if (result && shouldRenderInReading) {
-					pendingHeaderDiv = result;
-				}
+				await this.renderAndInjectGroupedContent(view, combinedContent, RenderLocation.Header, false);
+				if (!this.isCurrentRender(view, render)) return;
 			}
 			
 			// Handle header content above properties
 			if (headerContentGroups.aboveProperties.length > 0) {
 				const combinedContent = headerContentGroups.aboveProperties.join(contentSeparator);
-				const result = await this.renderAndInjectGroupedContent(view, combinedContent, RenderLocation.Header, true);
-				if (result && shouldRenderInReading) {
-					pendingHeaderAbovePropertiesDiv = result;
-				}
+				await this.renderAndInjectGroupedContent(view, combinedContent, RenderLocation.Header, true);
+				if (!this.isCurrentRender(view, render)) return;
 			}
 			
 			// Handle normal footer content
 			if (footerContentGroups.normal.length > 0) {
 				const combinedContent = footerContentGroups.normal.join(contentSeparator);
-				const result = await this.renderAndInjectGroupedContent(view, combinedContent, RenderLocation.Footer, false, false);
-				if (result && shouldRenderInReading) {
-					pendingFooterDiv = result;
-				}
+				await this.renderAndInjectGroupedContent(view, combinedContent, RenderLocation.Footer, false, false);
+				if (!this.isCurrentRender(view, render)) return;
 			}
 			
 			// Handle footer content above backlinks
 			if (footerContentGroups.aboveBacklinks.length > 0) {
 				const combinedContent = footerContentGroups.aboveBacklinks.join(contentSeparator);
-				const result = await this.renderAndInjectGroupedContent(view, combinedContent, RenderLocation.Footer, false, true);
-				if (result && shouldRenderInReading) {
-					pendingFooterAboveBacklinksDiv = result;
-				}
+				await this.renderAndInjectGroupedContent(view, combinedContent, RenderLocation.Footer, false, true);
+				if (!this.isCurrentRender(view, render)) return;
 			}
 
 			for (const { rule, contentText, index } of sectionHeaderRules) {
 				await this.renderAndInjectSectionHeaderContent(view, contentText, rule, index, true);
+				if (!this.isCurrentRender(view, render)) return;
 			}
 
 		}
 
-		// If any content is pending for preview mode, set up an observer
-		if (pendingHeaderDiv || pendingFooterDiv || pendingHeaderAbovePropertiesDiv || pendingFooterAboveBacklinksDiv) {
-			this.pendingPreviewInjections.set(view, {
-				headerDiv: pendingHeaderDiv || undefined,
-				footerDiv: pendingFooterDiv || undefined,
-				headerAbovePropertiesDiv: pendingHeaderAbovePropertiesDiv || undefined,
-				footerAboveBacklinksDiv: pendingFooterAboveBacklinksDiv || undefined,
-				filePath: view.file.path,
-			});
-			this.ensurePreviewObserver(view);
-		}
-
+		if (!this.isCurrentRender(view, render)) return;
 		this.ensureEmbedObserver(view);
 		await this.processEmbedsInView(view);
 		this.queueCanvasEmbedRefresh();
@@ -1975,371 +1963,85 @@ export default class VirtualFooterPlugin extends Plugin {
 	 */
 	private async renderAndInjectGroupedContent(
 		view: MarkdownView,
-		combinedContentText: string,
-		renderLocation: RenderLocation,
-		renderAboveProperties: boolean = false,
-		renderAboveBacklinks: boolean = false
-	): Promise<HTMLElementWithComponent | null> {
-		if (!combinedContentText || combinedContentText.trim() === "") {
-			return null;
-		}
-
-		const isRenderInHeader = renderLocation === RenderLocation.Header;
-		const sourcePath = view.file?.path || ''; // For MarkdownRenderer context
-
-		// Create container div for the content
-		const groupDiv = view.containerEl.createDiv() as HTMLElementWithComponent;
-		groupDiv.className = CSS_DYNAMIC_CONTENT_ELEMENT; // Base class for all injected content
-		groupDiv.classList.add(
-			isRenderInHeader ? CSS_HEADER_GROUP_ELEMENT : CSS_FOOTER_GROUP_ELEMENT,
-			isRenderInHeader ? CSS_HEADER_RENDERED_CONTENT : CSS_FOOTER_RENDERED_CONTENT
-		);
-
-		// Add the above-backlinks class for footer content when the setting is enabled
-		if (!isRenderInHeader && renderAboveBacklinks) {
-			groupDiv.classList.add(CSS_ABOVE_BACKLINKS);
-			groupDiv.classList.add('virtual-footer-above-backlinks');
-		}
-		
-		// Add the above-properties class for header content when the setting is enabled
-		if (isRenderInHeader && renderAboveProperties) {
-			groupDiv.classList.add('virtual-footer-above-properties');
-		}
-
-		// Create and manage an Obsidian Component for the lifecycle of this content
+		text: string,
+		location: RenderLocation,
+		aboveProperties = false,
+		aboveBacklinks = false
+	): Promise<void> {
+		const render = this.viewRenders.get(view);
+		if (!render || !this.isCurrentRender(view, render) || !text.trim()) return;
+		const header = location === RenderLocation.Header;
 		const component = new Component();
-		component.load();
-		groupDiv.component = component;
-
-		// Try to render the Markdown content with retry logic for early load errors
-		try {
-			await MarkdownRenderer.render(this.app, combinedContentText, groupDiv, sourcePath, component);
-		} catch (error) {
-			console.error("VirtualFooter: Error during initial render, will retry after delay:", error);
-			
-			// Add a placeholder while waiting to retry
-			const placeholderEl = groupDiv.createDiv({ cls: "virtual-footer-loading" });
-			placeholderEl.createEl("p", { text: "Loading virtual content..." });
-			
-			// Schedule a retry after a delay to allow other plugins to initialize
-			window.setTimeout(() => {
-				void (async () => {
-					try {
-						placeholderEl.remove();
-						await MarkdownRenderer.render(this.app, combinedContentText, groupDiv, sourcePath, component);
-						this.attachInternalLinkHandlers(groupDiv, sourcePath, component);
-					} catch (secondError) {
-						console.error("VirtualFooter: Failed to render content after retry:", secondError);
-						const errorEl = groupDiv.createDiv({ cls: "virtual-footer-error" });
-						errorEl.createEl("p", { text: "Error rendering virtual content. Please reload the page or check the content for errors." });
-					}
-				})();
-			}, 2000); // 2 second delay
-		}
-
-		let injectionSuccessful = false;
-		const viewState = view.getState();
-
-		// Inject based on view mode and render location
-		if (viewState.mode === 'preview') { // Reading mode
-			const previewContentParent = view.previewMode.containerEl;
-			let targetParent: HTMLElement | null = null;
-			
-			if (isRenderInHeader) {
-				if (renderAboveProperties) {
-					// Try to find metadata container first
-					targetParent = previewContentParent.querySelector<HTMLElement>(SELECTOR_METADATA_CONTAINER);
-				}
-				// If no metadata container or renderAboveProperties is false, use regular header
-				if (!targetParent) {
-					targetParent = previewContentParent.querySelector<HTMLElement>(SELECTOR_PREVIEW_HEADER_AREA);
-				}
-			} else { // Footer
-				if (renderAboveBacklinks) {
-					// Try to find embedded backlinks first
-					targetParent = previewContentParent.querySelector<HTMLElement>(SELECTOR_EMBEDDED_BACKLINKS);
-				}
-				// If no backlinks or renderAboveBacklinks is false, use regular footer
-				if (!targetParent) {
-					targetParent = previewContentParent.querySelector<HTMLElement>(SELECTOR_PREVIEW_FOOTER_AREA);
-				}
-			}
-			
-			if (targetParent) {
-				// Ensure idempotency: remove any existing content of this type before adding new
-				if (isRenderInHeader && renderAboveProperties) {
-					// Remove existing header content above properties
-					view.previewMode.containerEl.querySelectorAll(`.${CSS_HEADER_GROUP_ELEMENT}.virtual-footer-above-properties`).forEach(el => {
-						const holder = el as HTMLElementWithComponent;
-						holder.component?.unload();
-						el.remove();
-					});
-				} else if (isRenderInHeader && !renderAboveProperties) {
-					// Remove existing normal header content
-					targetParent.querySelectorAll(`.${CSS_HEADER_GROUP_ELEMENT}:not(.virtual-footer-above-properties)`).forEach(el => {
-						const holder = el as HTMLElementWithComponent;
-						holder.component?.unload();
-						el.remove();
-					});
-				} else if (!isRenderInHeader && renderAboveBacklinks) {
-					// Remove existing footer content above backlinks
-					view.previewMode.containerEl.querySelectorAll(`.${CSS_FOOTER_GROUP_ELEMENT}.virtual-footer-above-backlinks`).forEach(el => {
-						const holder = el as HTMLElementWithComponent;
-						holder.component?.unload();
-						el.remove();
-					});
-				} else if (!isRenderInHeader && !renderAboveBacklinks) {
-					// Remove existing normal footer content
-					targetParent.querySelectorAll(`.${CSS_FOOTER_GROUP_ELEMENT}:not(.virtual-footer-above-backlinks)`).forEach(el => {
-						const holder = el as HTMLElementWithComponent;
-						holder.component?.unload();
-						el.remove();
-					});
-				}
-				
-				if (isRenderInHeader && !renderAboveProperties) {
-					targetParent.appendChild(groupDiv);
-				} else if (!isRenderInHeader && !renderAboveBacklinks) {
-					targetParent.appendChild(groupDiv);
-				} else {
-					// Insert before properties or backlinks
-					targetParent.parentElement?.insertBefore(groupDiv, targetParent);
-				}
-				injectionSuccessful = true;
-			}
-		} else if (viewState.mode === 'source') { // Live Preview or Source mode
-			if (isRenderInHeader) {
-				let targetParent: HTMLElement | null = null;
-				
-				if (renderAboveProperties) {
-					// Try to find metadata container first in live preview
-					targetParent = view.containerEl.querySelector<HTMLElement>(SELECTOR_METADATA_CONTAINER);
-				}
-				
-				// If no metadata container or renderAboveProperties is false, use content container
-				if (!targetParent) {
-					const cmContentContainer = view.containerEl.querySelector<HTMLElement>(SELECTOR_LIVE_PREVIEW_CONTENT_CONTAINER);
-					if (cmContentContainer?.parentElement) {
-						// Ensure idempotency: remove existing normal header content
-						cmContentContainer.parentElement.querySelectorAll(`.${CSS_HEADER_GROUP_ELEMENT}:not(.virtual-footer-above-properties)`).forEach(el => {
-							const holder = el as HTMLElementWithComponent;
-							holder.component?.unload();
-							el.remove();
-						});
-						cmContentContainer.parentElement.insertBefore(groupDiv, cmContentContainer);
-						injectionSuccessful = true;
-					}
-				} else {
-					// Ensure idempotency: remove existing header content above properties
-					view.containerEl.querySelectorAll(`.${CSS_HEADER_GROUP_ELEMENT}.virtual-footer-above-properties`).forEach(el => {
-						const holder = el as HTMLElementWithComponent;
-						holder.component?.unload();
-						el.remove();
-					});
-					// Insert before properties
-					targetParent.parentElement?.insertBefore(groupDiv, targetParent);
-					injectionSuccessful = true;
-				}
-			} else { // Footer in Live Preview or Source mode
-				let targetParent: HTMLElement | null = null;
-				
-				if (renderAboveBacklinks) {
-					// Try to find embedded backlinks first in live preview
-					targetParent = view.containerEl.querySelector<HTMLElement>(SELECTOR_EMBEDDED_BACKLINKS);
-				}
-				
-				// If no backlinks or renderAboveBacklinks is false, use regular editor sizer
-				if (!targetParent) {
-					targetParent = view.containerEl.querySelector<HTMLElement>(SELECTOR_EDITOR_SIZER);
-				}
-				
-				if (targetParent) {
-					// Ensure idempotency: remove existing content of the appropriate type
-					if (renderAboveBacklinks) {
-						// Remove existing footer content above backlinks
-						view.containerEl.querySelectorAll(`.${CSS_FOOTER_GROUP_ELEMENT}.virtual-footer-above-backlinks`).forEach(el => {
-							const holder = el as HTMLElementWithComponent;
-							holder.component?.unload();
-							el.remove();
-						});
-					} else {
-						// Remove existing normal footer content
-						targetParent.querySelectorAll(`.${CSS_FOOTER_GROUP_ELEMENT}:not(.virtual-footer-above-backlinks)`).forEach(el => {
-							const holder = el as HTMLElementWithComponent;
-							holder.component?.unload();
-							el.remove();
-						});
-					}
-					
-					if (!renderAboveBacklinks || targetParent.matches(SELECTOR_EDITOR_SIZER)) {
-						targetParent.appendChild(groupDiv);
-					} else {
-						// Insert before backlinks
-						targetParent.parentElement?.insertBefore(groupDiv, targetParent);
-					}
-					injectionSuccessful = true;
-				}
-			}
-		}
-
-		if (injectionSuccessful) {
-			this.attachInternalLinkHandlers(groupDiv, sourcePath, component);
-			return null; // Injection successful, no need to return element
-		} else {
-			// If injection failed in preview mode, it might be because the target DOM isn't ready.
-			// Return the div to be handled by the MutationObserver.
-			if (viewState.mode === 'preview') {
-				console.debug(`VirtualFooter: Deferring injection for ${renderLocation} in preview mode. Target not found yet.`);
-				return groupDiv; // Return for deferred injection
-			} else {
-				// For other modes, if injection fails, unload component and log warning.
-				component.unload();
-				console.warn(`VirtualFooter: Failed to find injection point for dynamic content group (${renderLocation}). View mode: ${viewState.mode}.`);
-				return null;
-			}
-		}
-	}
-
-	/**
-	 * Ensures a MutationObserver is set up for a view in preview mode to handle deferred content injection.
-	 * The observer watches for the appearance of target DOM elements and is careful not to act on stale data.
-	 * @param view The MarkdownView to observe.
-	 */
-	private ensurePreviewObserver(view: MarkdownView): void {
-		if (this.previewObservers.has(view) || !view.file || !view.previewMode?.containerEl) {
-			return; // Observer already exists, or view/file/container not ready
-		}
-
-		const observerPath = view.file.path; // Path this observer is responsible for.
-
-		const observer = new MutationObserver((_mutations) => {
-			const pending = this.pendingPreviewInjections.get(view);
-
-			// This observer is stale and should self-destruct if:
-			// 1. The view has no file or has navigated to a different file.
-			// 2. There are no pending injections for this view.
-			// 3. The pending injections are for a different file.
-			if (!view.file || view.file.path !== observerPath || !pending || pending.filePath !== observerPath) {
-				observer.disconnect();
-				// Only remove this specific observer instance from the map
-				if (this.previewObservers.get(view) === observer) {
-					this.previewObservers.delete(view);
-				}
-				return;
-			}
-
-			// If there's nothing left to inject, clean up and disconnect.
-			if (!pending.headerDiv && !pending.footerDiv && !pending.headerAbovePropertiesDiv && !pending.footerAboveBacklinksDiv) {
-				observer.disconnect();
-				if (this.previewObservers.get(view) === observer) {
-					this.previewObservers.delete(view);
-				}
-				this.pendingPreviewInjections.delete(view);
-				return;
-			}
-
-			let allResolved = true;
-			const sourcePath = view.file.path;
-
-			// Attempt to inject pending header content
-			if (pending.headerDiv) {
-				const headerTargetParent = view.previewMode.containerEl.querySelector<HTMLElement>(SELECTOR_PREVIEW_HEADER_AREA);
-				if (headerTargetParent) {
-					// Ensure idempotency: remove any existing header content before adding new.
-					headerTargetParent.querySelectorAll(`.${CSS_HEADER_GROUP_ELEMENT}`).forEach(el => {
-						const holder = el as HTMLElementWithComponent;
-						holder.component?.unload();
-						el.remove();
-					});
-					headerTargetParent.appendChild(pending.headerDiv);
-					if (pending.headerDiv.component) {
-						this.attachInternalLinkHandlers(pending.headerDiv, sourcePath, pending.headerDiv.component);
-					}
-					delete pending.headerDiv; // Injection successful
-				} else {
-					allResolved = false; // Target not yet available
-				}
-			}
-
-			// Attempt to inject pending header content above properties
-			if (pending.headerAbovePropertiesDiv) {
-				const headerTargetParent = view.previewMode.containerEl.querySelector<HTMLElement>(SELECTOR_METADATA_CONTAINER);
-				if (headerTargetParent) {
-					// Ensure idempotency: remove any existing content of this type
-					view.previewMode.containerEl.querySelectorAll(`.${CSS_HEADER_GROUP_ELEMENT}.virtual-footer-above-properties`).forEach(el => {
-						const holder = el as HTMLElementWithComponent;
-						holder.component?.unload();
-						el.remove();
-					});
-					// Add a class to distinguish this from regular header content
-					pending.headerAbovePropertiesDiv.classList.add('virtual-footer-above-properties');
-					// Insert before properties
-					headerTargetParent.parentElement?.insertBefore(pending.headerAbovePropertiesDiv, headerTargetParent);
-					if (pending.headerAbovePropertiesDiv.component) {
-						this.attachInternalLinkHandlers(pending.headerAbovePropertiesDiv, sourcePath, pending.headerAbovePropertiesDiv.component);
-					}
-					delete pending.headerAbovePropertiesDiv; // Injection successful
-				} else {
-					allResolved = false; // Target not yet available
-				}
-			}
-
-			// Attempt to inject pending footer content
-			if (pending.footerDiv) {
-				const footerTargetParent = view.previewMode.containerEl.querySelector<HTMLElement>(SELECTOR_PREVIEW_FOOTER_AREA);
-				if (footerTargetParent) {
-					// Ensure idempotency: remove any existing footer content before adding new.
-					footerTargetParent.querySelectorAll(`.${CSS_FOOTER_GROUP_ELEMENT}`).forEach(el => {
-						const holder = el as HTMLElementWithComponent;
-						holder.component?.unload();
-						el.remove();
-					});
-					footerTargetParent.appendChild(pending.footerDiv);
-					if (pending.footerDiv.component) {
-						this.attachInternalLinkHandlers(pending.footerDiv, sourcePath, pending.footerDiv.component);
-					}
-					delete pending.footerDiv; // Injection successful
-				} else {
-					allResolved = false; // Target not yet available
-				}
-			}
-
-			// Attempt to inject pending footer content above backlinks
-			if (pending.footerAboveBacklinksDiv) {
-				const footerTargetParent = view.previewMode.containerEl.querySelector<HTMLElement>(SELECTOR_EMBEDDED_BACKLINKS);
-				if (footerTargetParent) {
-					// Ensure idempotency: remove any existing content of this type
-					view.previewMode.containerEl.querySelectorAll(`.${CSS_FOOTER_GROUP_ELEMENT}.virtual-footer-above-backlinks`).forEach(el => {
-						const holder = el as HTMLElementWithComponent;
-						holder.component?.unload();
-						el.remove();
-					});
-					// Add a class to distinguish this from regular footer content
-					pending.footerAboveBacklinksDiv.classList.add('virtual-footer-above-backlinks');
-					// Insert before backlinks
-					footerTargetParent.parentElement?.insertBefore(pending.footerAboveBacklinksDiv, footerTargetParent);
-					if (pending.footerAboveBacklinksDiv.component) {
-						this.attachInternalLinkHandlers(pending.footerAboveBacklinksDiv, sourcePath, pending.footerAboveBacklinksDiv.component);
-					}
-					delete pending.footerAboveBacklinksDiv; // Injection successful
-				} else {
-					allResolved = false; // Target not yet available
-				}
-			}
-
-			// If all pending injections are resolved, disconnect the observer
-			if (allResolved) {
-				observer.disconnect();
-				if (this.previewObservers.get(view) === observer) {
-					this.previewObservers.delete(view);
-				}
-				this.pendingPreviewInjections.delete(view);
-			}
+		render.component.addChild(component);
+		let group: HTMLElementWithComponent | undefined;
+		let timer: number | undefined;
+		let disposed = false;
+		let attempt: Component | undefined;
+		const valid = () => !disposed && this.isCurrentRender(view, render);
+		const observer = new MutationObserver(() => { void place(); });
+		component.register(() => {
+			disposed = true;
+			observer.disconnect();
+			if (timer !== undefined) window.clearTimeout(timer);
+			group?.remove();
 		});
 
-		// Start observing the preview container for child and subtree changes
-		observer.observe(view.previewMode.containerEl, { childList: true, subtree: true });
-		this.previewObservers.set(view, observer);
+		const renderContent = async (retry = false): Promise<void> => {
+			if (!valid() || !group) return;
+			try {
+				if (attempt) component.removeChild(attempt);
+				attempt = component.addChild(new Component());
+				await MarkdownRenderer.render(this.app, text, group, render.path, attempt);
+				if (!valid()) { component.unload(); return; }
+				this.attachInternalLinkHandlers(group, render.path, attempt);
+			} catch (error) {
+				if (!valid()) { component.unload(); return; }
+				console.error('VirtualContent: Failed to render content', error);
+				if (!retry) {
+					timer = window.setTimeout(() => {
+						if (!valid() || !group) return;
+						group.empty();
+						void renderContent(true);
+					}, 2000);
+				}
+			}
+		};
+
+		const place = async (): Promise<void> => {
+			if (!valid()) { component.unload(); return; }
+			if (group) return;
+			const preview = render.mode === 'preview';
+			const root = preview ? view.previewMode?.containerEl : view.containerEl.querySelector<HTMLElement>('.markdown-source-view.mod-cm6');
+			if (!root || !view.containerEl.contains(root)) return;
+			// Never borrow a destination from a nested note or rendered virtual content.
+			const find = (selector: string): HTMLElement | undefined => Array.from(root.querySelectorAll<HTMLElement>(selector)).find(el => {
+				for (let parent: HTMLElement | null = el; parent && parent !== root; parent = parent.parentElement) {
+					if (parent.matches('.markdown-embed, .internal-embed, .' + CSS_DYNAMIC_CONTENT_ELEMENT)) return false;
+				}
+				return true;
+			});
+			let target = header && aboveProperties ? find(SELECTOR_METADATA_CONTAINER) :
+				!header && aboveBacklinks ? find(SELECTOR_EMBEDDED_BACKLINKS) : undefined;
+			let before = !!target;
+			if (!target) {
+				target = find(preview ? (header ? SELECTOR_PREVIEW_HEADER_AREA : SELECTOR_PREVIEW_FOOTER_AREA) :
+					(header ? SELECTOR_LIVE_PREVIEW_CONTENT_CONTAINER : SELECTOR_EDITOR_SIZER));
+				before = !preview && header;
+			}
+			if (!target || (before && !target.parentElement)) return;
+			group = view.containerEl.ownerDocument.createElement('div') as HTMLElementWithComponent;
+			group.className = `${CSS_DYNAMIC_CONTENT_ELEMENT} ${header ? CSS_HEADER_GROUP_ELEMENT : CSS_FOOTER_GROUP_ELEMENT} ${header ? CSS_HEADER_RENDERED_CONTENT : CSS_FOOTER_RENDERED_CONTENT}`;
+			if (header && aboveProperties) group.classList.add('virtual-footer-above-properties');
+			if (!header && aboveBacklinks) group.classList.add(CSS_ABOVE_BACKLINKS);
+			group.component = component;
+			if (before) target.parentElement!.insertBefore(group, target);
+			else target.appendChild(group);
+			observer.disconnect();
+			await renderContent();
+		};
+		// Observe first, then check immediately: the target may already exist.
+		observer.observe(view.containerEl, { childList: true, subtree: true });
+		await place();
 	}
 
 	/**
@@ -2474,24 +2176,10 @@ export default class VirtualFooterPlugin extends Plugin {
 	 * @param view The MarkdownView to clean up.
 	 */
 	private async removeDynamicContentFromView(view: MarkdownView, preserveSectionHeader: boolean = false): Promise<void> {
+		this.cancelViewRender(view);
 		this.removeLivePreviewFooterStyles(view);
 		this.removeFooterBottomPadding(view);
 		await this.removeInjectedContentDOM(view.containerEl, preserveSectionHeader);
-
-		// Disconnect and remove observer for this view
-		const observer = this.previewObservers.get(view);
-		if (observer) {
-			observer.disconnect();
-			this.previewObservers.delete(view);
-		}
-
-		// Clean up any pending injections for this view
-		const pending = this.pendingPreviewInjections.get(view);
-		if (pending) {
-			pending.headerDiv?.component?.unload();
-			pending.footerDiv?.component?.unload();
-			this.pendingPreviewInjections.delete(view);
-		}
 
 		// Disconnect embed observer for this view
 		const embedObserver = this.embedObservers.get(view);
