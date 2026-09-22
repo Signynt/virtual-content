@@ -368,6 +368,8 @@ export class VirtualContentView extends ItemView {
  */
 export default class VirtualFooterPlugin extends Plugin {
 	settings: VirtualFooterSettings = DEFAULT_SETTINGS;
+	private sectionRenders = new WeakMap<MarkdownView, Map<number, Component>>();
+	private sectionRefreshes = new WeakMap<MarkdownView, object>();
 	private viewRenders = new Map<MarkdownView, { path: string; mode: unknown; source: unknown; component: Component }>();
 
 	private isCurrentRender(view: MarkdownView, render: { path: string; mode: unknown; source: unknown; component: Component }): boolean {
@@ -1675,7 +1677,12 @@ export default class VirtualFooterPlugin extends Plugin {
 
 		const selector = rule.sectionHeaderLevel || 'h2';
 		const headings = Array.from(container.querySelectorAll<HTMLElement>(selector));
-		return headings.find((heading) => this.normalizeSectionHeaderText(heading.textContent || '') === targetText) || null;
+		return headings.find((heading) => {
+			for (let parent: HTMLElement | null = heading; parent && parent !== container; parent = parent.parentElement) {
+				if (parent.matches('.internal-embed, .markdown-embed, .' + CSS_DYNAMIC_CONTENT_ELEMENT)) return false;
+			}
+			return this.normalizeSectionHeaderText(heading.textContent || '') === targetText;
+		}) || null;
 	}
 
 	private findEditorSectionTarget(container: HTMLElement, rule: Rule): HTMLElement | null {
@@ -1836,12 +1843,13 @@ export default class VirtualFooterPlugin extends Plugin {
 		forceReplace: boolean,
 		target?: { text: string; level: string }
 	): Promise<void> {
-		if (!view.file) {
-			return;
-		}
-
+		const render = this.viewRenders.get(view);
+		if (!render || !this.isCurrentRender(view, render)) return;
+		const refresh = {};
+		this.sectionRefreshes.set(view, refresh);
 		this.removeStaleSectionHeaderContent(view);
-		const applicableRulesWithContent = await this._getApplicableRulesAndContent(view.file.path);
+		const applicableRulesWithContent = await this._getApplicableRulesAndContent(render.path);
+		if (!this.isCurrentRender(view, render) || this.sectionRefreshes.get(view) !== refresh) return;
 		for (const { rule, contentText, index } of applicableRulesWithContent) {
 			if (rule.renderLocation !== RenderLocation.SectionHeader) {
 				continue;
@@ -1856,6 +1864,7 @@ export default class VirtualFooterPlugin extends Plugin {
 				continue;
 			}
 			await this.renderAndInjectSectionHeaderContent(view, contentText, rule, index, forceReplace);
+			if (!this.isCurrentRender(view, render) || this.sectionRefreshes.get(view) !== refresh) return;
 		}
 	}
 
@@ -1866,90 +1875,84 @@ export default class VirtualFooterPlugin extends Plugin {
 		ruleIndex: number,
 		forceReplace: boolean = false
 	): Promise<void> {
-		if (!contentText || contentText.trim() === "" || !rule.sectionHeaderText?.trim()) {
-			return;
-		}
-
-		const sourcePath = view.file?.path || '';
-		const viewState = view.getState();
-		const existingSelector = `.${CSS_SECTION_HEADER_GROUP_ELEMENT}[data-rule-index="${ruleIndex}"][data-source-path="${sourcePath}"]`;
-		let container: HTMLElement | null = null;
-		let heading: HTMLElement | null = null;
-
-		if (viewState.mode !== 'preview') {
-			return;
-		}
-
-		container = view.previewMode.containerEl;
-		heading = this.findPreviewSectionTarget(container, rule);
-
-		if (!container || !heading) {
-			return;
-		}
-
-		if (this.isHeadingCollapsed(heading)) {
-			this.removeSectionHeaderContent(container, ruleIndex);
-			return;
-		}
-
-		if (!forceReplace && view.containerEl.querySelector(existingSelector)) {
-			return;
-		}
-
-		const component = new Component();
-		component.load();
-
-		const groupDiv = view.containerEl.createDiv() as HTMLElementWithComponent;
-		groupDiv.className = `${CSS_DYNAMIC_CONTENT_ELEMENT} ${CSS_SECTION_HEADER_GROUP_ELEMENT}`;
-		this.setSectionHeaderDataset(groupDiv, rule, ruleIndex);
-		groupDiv.dataset.sourcePath = sourcePath;
-		groupDiv.component = component;
-
-		try {
-			await MarkdownRenderer.render(this.app, contentText, groupDiv, sourcePath, component);
-		} catch (error) {
-			console.error("VirtualFooter: Error rendering section header content:", error);
-			component.unload();
-			return;
-		}
-
-		const placement = rule.sectionHeaderPlacement || 'top';
-		const level = this.getSectionHeaderLevelNumber(rule);
-		let injected = false;
-
-		if (viewState.mode === 'preview') {
-			if (heading) {
-				this.removeSectionHeaderContent(container, ruleIndex);
-				const anchor = heading.parentElement || heading;
-				if (placement === 'top') {
-					if (anchor !== heading) {
-						anchor.appendChild(groupDiv);
-					} else {
-						anchor.parentElement?.insertBefore(groupDiv, anchor.nextSibling);
-					}
-				} else {
-					const endNode = this.getPreviewSectionEnd(heading, level);
-					if (endNode) {
-						const previousElement = endNode.previousSibling?.instanceOf(HTMLElement) ? endNode.previousSibling : null;
-						if (previousElement && previousElement !== anchor) {
-							previousElement.appendChild(groupDiv);
-						} else {
-							endNode.parentElement?.insertBefore(groupDiv, endNode);
-						}
-					} else {
-						anchor.parentElement?.appendChild(groupDiv);
-					}
-				}
-				injected = true;
-				this.updateSectionHeaderVisibility(container, false);
+		const render = this.viewRenders.get(view);
+		if (!render || !this.isCurrentRender(view, render) || render.mode !== 'preview' ||
+			!contentText.trim() || !rule.sectionHeaderText?.trim()) return;
+		let requests = this.sectionRenders.get(view);
+		if (!requests) this.sectionRenders.set(view, requests = new Map());
+		const previous = requests.get(ruleIndex);
+		if (previous && !forceReplace) return;
+		if (previous) render.component.removeChild(previous);
+		const component = render.component.addChild(new Component());
+		requests.set(ruleIndex, component);
+		let group: HTMLElementWithComponent | undefined;
+		let currentHeading: HTMLElement | undefined;
+		let attempt: Component | undefined;
+		let disposed = false;
+		const valid = () => !disposed && this.isCurrentRender(view, render) && requests!.get(ruleIndex) === component;
+		const clear = () => {
+			if (attempt) component.removeChild(attempt);
+			attempt = undefined;
+			group?.remove();
+			group = undefined;
+			currentHeading = undefined;
+		};
+		const observer = new MutationObserver(() => { void place(); });
+		component.register(() => {
+			disposed = true;
+			observer.disconnect();
+			clear();
+			if (requests!.get(ruleIndex) === component) requests!.delete(ruleIndex);
+		});
+		const place = async (): Promise<void> => {
+			if (!valid()) { component.unload(); return; }
+			const container = view.previewMode?.containerEl;
+			const heading = container && view.containerEl.contains(container)
+				? this.findPreviewSectionTarget(container, rule) : null;
+			if (!heading || this.isHeadingCollapsed(heading)) { clear(); return; }
+			if (group && currentHeading === heading && container.contains(group)) return;
+			clear();
+			const anchor = heading.parentElement || heading;
+			let parent: HTMLElement | null = anchor;
+			let before: Node | null = null;
+			if (rule.sectionHeaderPlacement === 'bottom') {
+				const end = this.getPreviewSectionEnd(heading, this.getSectionHeaderLevelNumber(rule));
+				const previous = end?.previousSibling;
+				if (previous?.instanceOf(HTMLElement) && previous !== anchor) parent = previous;
+				else { parent = end ? end.parentElement : anchor.parentElement; before = end; }
+			} else if (anchor === heading) {
+				parent = anchor.parentElement;
+				before = anchor.nextSibling;
 			}
-		}
-
-		if (injected) {
-			this.attachInternalLinkHandlers(groupDiv, sourcePath, component);
-		} else {
-			component.unload();
-		}
+			if (!parent || !container.contains(parent)) return;
+			const element = view.containerEl.ownerDocument.createElement('div') as HTMLElementWithComponent;
+			element.className = `${CSS_DYNAMIC_CONTENT_ELEMENT} ${CSS_SECTION_HEADER_GROUP_ELEMENT}`;
+			this.setSectionHeaderDataset(element, rule, ruleIndex);
+			element.dataset.sourcePath = render.path;
+			attempt = component.addChild(new Component());
+			const rendering = attempt;
+			element.component = component;
+			group = element;
+			currentHeading = heading;
+			parent.insertBefore(element, before);
+			try {
+				await MarkdownRenderer.render(this.app, contentText, element, render.path, rendering);
+				if (!valid()) { component.unload(); return; }
+				if (attempt !== rendering) return;
+				if (!container.contains(heading) || !container.contains(element) || this.isHeadingCollapsed(heading)) {
+					clear();
+					return;
+				}
+				this.attachInternalLinkHandlers(element, render.path, rendering);
+			} catch (error) {
+				if (attempt !== rendering) return;
+				console.error('VirtualContent: Error rendering section header content:', error);
+				// Stop observing on failure to avoid a mutation-driven retry loop.
+				component.unload();
+			}
+		};
+		observer.observe(view.containerEl, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'aria-expanded'] });
+		await place();
 	}
 
 	/**
